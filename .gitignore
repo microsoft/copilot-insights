@@ -427,3 +427,16 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.token
+*.jsonl
+*.db
+*.sqlite
+*.sqlite3
+/captures/

@@ -1,25 +1,19 @@
-# TODO: The maintainer of this repo has not yet edited this file
-
-**REPO OWNER**: Do you want Customer Service & Support (CSS) support for this product/project?
-
-- **No CSS support:** Fill out this template with information about how to file issues and get help.
-- **Yes CSS support:** Fill out an intake form at [aka.ms/onboardsupport](https://aka.ms/onboardsupport). CSS will work with/help you to determine next steps.
-- **Not sure?** Fill out an intake as though the answer were "Yes". CSS will help you decide.
-
-*Then remove this first heading from this SUPPORT.MD file before publishing your repo.*
-
 # Support
 
-## How to file issues and get help  
+## Current status
 
-This project uses GitHub Issues to track bugs and feature requests. Please search the existing 
-issues before filing new issues to avoid duplicates.  For new issues, file your bug or 
-feature request as a new Issue.
+Copilot Insights is a documentation-stage project. There is no installable release, hosted telemetry endpoint, or production support SLA. The proposed setup, collector, authentication helper, and analytics components still require implementation and validation.
 
-For help and questions about using this project, please **REPO MAINTAINER: INSERT INSTRUCTIONS HERE 
-FOR HOW TO ENGAGE REPO OWNERS OR COMMUNITY FOR HELP. COULD BE A STACK OVERFLOW TAG OR OTHER
-CHANNEL. WHERE WILL YOU HELP PEOPLE?**.
+## Questions and issues
 
-## Microsoft Support Policy  
+Use [GitHub Issues](https://github.com/microsoft/copilot-insights/issues) for design questions, documentation corrections, and feature proposals. Search existing issues before opening a new one.
 
-Support for this **PROJECT or PRODUCT** is limited to the resources listed above.
+Include the relevant document or proposed component, the question or expected behavior, and a minimal synthetic example where helpful. Do not include credentials, private repository details, captured conversations, or real telemetry payloads.
+
+Maintainer responses depend on availability; no response-time commitment is provided. Support is limited to these repository resources.
+
+## Security concerns
+
+Do not report vulnerabilities or disclose sensitive data in public issues. Follow [SECURITY.md](SECURITY.md) for private reporting.
+
+For problems in VS Code, GitHub Copilot, or OpenTelemetry itself, use the relevant upstream project's support process. This repository does not replace upstream product support.
