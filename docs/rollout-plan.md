@@ -1,6 +1,6 @@
 # Implementation and Rollout Plan
 
-Status: draft. No implementation, pilot, deployment, or public release is approved by this document.
+Status: draft. No pilot, deployment, or public release is approved by this document. A reference collector, [local quick start](../README.md#quick-start), and [private Azure template](infrastructure.md) support milestones M0 and M1.
 
 ## First delivery
 
@@ -46,7 +46,7 @@ This is a proposed Local-harness example, not a functioning authenticated setup.
 {
   "github.copilot.chat.otel.enabled": true,
   "github.copilot.chat.otel.exporterType": "otlp-http",
-  "github.copilot.chat.otel.otlpEndpoint": "https://telemetry.example.org/otlp",
+  "github.copilot.chat.otel.otlpEndpoint": "https://telemetry.example.org",
   "github.copilot.chat.otel.captureContent": false,
   "github.copilot.chat.otel.captureIdentity": false
 }

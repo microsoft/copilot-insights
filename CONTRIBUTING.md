@@ -1,6 +1,6 @@
 # Contributing
 
-Copilot Insights is currently a documentation-first project. Contributions should improve the design, make assumptions testable, or prepare a narrowly scoped implementation milestone. Do not describe planned components as shipped features.
+Copilot Insights is an early-stage project with a reference collector, local quick start, and Azure template. Contributions should improve the design, make assumptions testable, or deliver a narrowly scoped implementation milestone. Do not describe planned components as shipped features.
 
 ## Propose a change
 
@@ -29,7 +29,13 @@ Before proposing documentation changes:
 - Run `git diff --check`.
 - Distinguish documented capability, observed test evidence, and a proposed design decision.
 
-There is no implementation test suite or installable package yet. Future code must introduce focused tests for its behavior, especially privacy filtering, authentication, safe setup/restore, and counting correctness.
+## Implementation checks
+
+- For collector changes, run the local quick start and `./scripts/verify.ps1`. Add canary cases to the script when you allow a new field or signal.
+- For template changes, run `az bicep build --file deploy/azure/main.bicep` and `az bicep lint --file deploy/azure/main.bicep` with no warnings.
+- Update the pinned image tag and digest together.
+
+New components need focused tests for their behavior, especially authentication, safe setup and restore, and counting correctness.
 
 ## Security and conduct
 

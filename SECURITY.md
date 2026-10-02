@@ -15,7 +15,7 @@ please review the latest guidance for Microsoft repositories at
 
 ## Project status
 
-This repository currently contains proposals and documentation, not an executable release. No deployed endpoint, supported binary, credential helper, or production-security guarantee is provided.
+This repository contains an early reference implementation, not a supported release. No hosted endpoint, supported binary, credential helper, or production-security guarantee is provided.
 
 Organizations adopting a future implementation remain responsible for their collection approval, identity configuration, access controls, retention, and deployment security.
 

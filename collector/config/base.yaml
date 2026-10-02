@@ -1,0 +1,97 @@
+# Shared receiver and privacy pipeline. Always layer exactly one profile on top:
+#   --config=base.yaml --config=local.yaml   (localhost quick start, no authentication)
+#   --config=base.yaml --config=azure.yaml   (authenticated ingestion, Azure Monitor export)
+# Profiles add exporters and extensions only, so local verification exercises the same filters as production.
+
+extensions:
+  health_check:
+    endpoint: "${env:CI_HEALTH_ENDPOINT:-0.0.0.0:13133}"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "${env:CI_OTLP_HTTP_ENDPOINT:-0.0.0.0:4318}"
+        max_request_body_size: 4194304
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Drops whole records that are outside the data contract. Errors drop the batch instead of passing it through.
+  filter/allowlist:
+    error_mode: propagate
+    traces:
+      span:
+        - 'attributes["gen_ai.operation.name"] != "invoke_agent" and attributes["gen_ai.operation.name"] != "chat" and attributes["gen_ai.operation.name"] != "execute_tool"'
+      spanevent:
+        - 'true'
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^(gen_ai[.]client[.]operation[.]duration|gen_ai[.]client[.]token[.]usage|copilot_chat[.](tool[.]call[.]count|tool[.]call[.]duration|agent[.]invocation[.]duration|agent[.]turn[.]count|session[.]count|time_to_first_token|user[.]feedback[.]count|edit[.]acceptance[.]count|chat_edit[.]outcome[.]count))$")'
+
+  # Keeps only allow-listed attributes on the records that remain.
+  transform/allowlist:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements: &resource_statements
+          - keep_keys(attributes, ["service.name", "service.version", "session.id", "copilot_insights.organization.id", "copilot_insights.cohort.id", "copilot_insights.config.version", "copilot_insights.rollout.ring"])
+          - truncate_all(attributes, 128)
+      - context: scope
+        statements: &scope_statements
+          - keep_keys(attributes, [])
+      - context: span
+        statements:
+          - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.conversation.id", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.response.finish_reasons", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.reasoning.output_tokens", "gen_ai.tool.name", "gen_ai.tool.type", "gen_ai.tool.call.id", "github.copilot.agent.type", "github.copilot.tool.parameters.edit_type", "github.copilot.tool.parameters.skill_name", "github.copilot.tool.parameters.mcp_server_name_hash", "github.copilot.tool.parameters.mcp_tool_name", "copilot_chat.turn_count", "copilot_chat.time_to_first_token", "error.type"])
+          - truncate_all(attributes, 256)
+          # Span names embed model and tool names; the operation attribute is the reviewed equivalent.
+          - set(name, attributes["gen_ai.operation.name"])
+          - set(status.message, "")
+    log_statements:
+      - context: resource
+        statements: *resource_statements
+      - context: scope
+        statements: *scope_statements
+      - context: log
+        statements:
+          - keep_keys(attributes, ["event.name", "gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.conversation.id", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.tool.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "error.type"])
+          - truncate_all(attributes, 256)
+          - set(body, "")
+    metric_statements:
+      - context: resource
+        statements: *resource_statements
+      - context: scope
+        statements: *scope_statements
+      - context: datapoint
+        statements:
+          - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.token.type", "gen_ai.tool.name", "copilot_chat.edit.source", "error.type"])
+          - truncate_all(attributes, 256)
+
+  # The organization comes from deployment configuration; a client-supplied value is overwritten.
+  resource/organization:
+    attributes:
+      - key: copilot_insights.organization.id
+        value: "${env:CI_ORGANIZATION_ID}"
+        action: upsert
+
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/allowlist, transform/allowlist, resource/organization, batch]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/allowlist, transform/allowlist, resource/organization, batch]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/allowlist, resource/organization, batch]

@@ -1,0 +1,38 @@
+# Production profile: Entra ID bearer tokens on ingestion, managed identity export to Application Insights.
+extensions:
+  oidc:
+    providers:
+      - issuer_url: "${env:CI_OIDC_ISSUER_URL}"
+        audience: "${env:CI_OIDC_AUDIENCE}"
+  azure_auth:
+    managed_identity:
+      client_id: "${env:AZURE_CLIENT_ID}"
+    # Application Insights ingestion requires this audience, not one derived from the ingestion host.
+    scopes:
+      - https://monitor.azure.com/.default
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        auth:
+          authenticator: oidc
+
+exporters:
+  azure_monitor:
+    connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
+    auth:
+      authenticator: azure_auth
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+
+service:
+  extensions: [health_check, oidc, azure_auth]
+  pipelines:
+    traces:
+      exporters: [azure_monitor]
+    metrics:
+      exporters: [azure_monitor]
+    logs:
+      exporters: [azure_monitor]

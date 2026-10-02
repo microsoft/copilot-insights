@@ -1,0 +1,28 @@
+# Local quick start: the production collector image with the unauthenticated local profile and a dashboard.
+# Every port is published on 127.0.0.1 only. Do not expose this stack to other machines.
+name: copilot-insights
+
+services:
+  collector:
+    build:
+      context: ../../collector
+    image: copilot-insights-collector:local
+    command: ["--config=/etc/copilot-insights/base.yaml", "--config=/etc/copilot-insights/local.yaml"]
+    environment:
+      CI_ORGANIZATION_ID: local-dev
+    ports:
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
+    volumes:
+      - ./.data:/data
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+
+  dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.6.0@sha256:064b50d557fcaffd10f06bf79ba4069bd50994a84034f1a0fc35c165500482d7
+    environment:
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "127.0.0.1:18888:18888"
+    restart: unless-stopped

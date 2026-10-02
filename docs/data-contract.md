@@ -1,6 +1,6 @@
 # Data Contract and Privacy
 
-Status: proposed contract. Field availability, privacy behavior, and backend mappings require validation before implementation is considered ready for real-user collection.
+Status: proposed contract. The reference allow-lists are in [collector/config/base.yaml](../collector/config/base.yaml) and are verified with synthetic canaries. Field availability in real Copilot exports, and backend mappings, require validation before real-user collection.
 
 ## Collection purpose
 
@@ -42,7 +42,7 @@ Proposed project-specific labels:
 
 | Attribute | Meaning |
 |---|---|
-| `copilot_insights.organization.id` | Configured organization label, verified against enrollment at ingestion |
+| `copilot_insights.organization.id` | Organization label; the reference collector overwrites any client value with its deployment setting |
 | `copilot_insights.cohort.id` | Approved pilot/team cohort where assignment is accurate |
 | `copilot_insights.config.version` | Setup/configuration revision |
 | `copilot_insights.rollout.ring` | Lab, pilot, or another approved rollout group |

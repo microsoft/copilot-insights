@@ -1,6 +1,6 @@
 # Architecture
 
-Status: proposed design. No components described here have been implemented in this repository.
+Status: proposed design with a reference implementation of the collector, local quick start, and private Azure deployment ([infrastructure](infrastructure.md)). The client setup script and local helper are not implemented.
 
 ## System boundaries
 
@@ -40,13 +40,13 @@ Loopback is not proof of process identity. Threat-model other processes running 
 
 ## Ingestion protocol
 
-Use OTLP over HTTP, initially with a tested protobuf configuration. An illustrative external base URL is `https://telemetry.example.org/otlp`; its signal paths are:
+Use OTLP over HTTP, initially with a tested protobuf configuration. The reference collector serves the standard signal paths at its root, so clients are configured with the base URL only (illustratively `https://telemetry.example.org`):
 
-- `/otlp/v1/traces`
-- `/otlp/v1/metrics`
-- `/otlp/v1/logs`
+- `/v1/traces`
+- `/v1/metrics`
+- `/v1/logs`
 
-These are examples, not live endpoints. Configure reverse-proxy path rewriting explicitly and verify each signal. Do not route telemetry through a browser application, interactive login redirect, or HTML error handler.
+The example domain is not a live endpoint. If a reverse proxy adds a path prefix, configure path rewriting explicitly and verify each signal. Do not route telemetry through a browser application, interactive login redirect, or HTML error handler.
 
 Ingress must enforce authentication and authorization, TLS, request/decompression limits, rate limits, and valid content types. Backend receiver ports must remain private. Access and diagnostic logs must not contain credentials or request bodies.
 
@@ -77,6 +77,8 @@ Use a version-pinned, approved OpenTelemetry Collector distribution and supporte
 5. Batch and enqueue only sanitized records.
 6. Export through the selected backend adapter with bounded retries.
 
+The reference configuration implements steps 2 to 5 in [collector/config/base.yaml](../collector/config/base.yaml), and [scripts/verify.ps1](../scripts/verify.ps1) checks them with canary values. Its processors fail closed: a processing error drops the batch rather than forwarding unfiltered data.
+
 Source-side filtering and server filtering have different guarantees: server filtering protects retained data, while only source-side controls can prevent prohibited fields from leaving the device.
 
 The Collector is a processing service, not the long-term database. Do not archive unrestricted raw payloads for hypothetical future analysis. Disable payload debugging in ingress, authentication components, and the collector.
@@ -87,7 +89,7 @@ Keep the receiver OTLP-based and the analytics schema explicit so deployments ca
 
 ### Azure Monitor reference option
 
-A proposed Azure deployment uses the Azure Monitor exporter to upload records to a workspace-based Application Insights resource, with durable query storage in its linked Log Analytics workspace. Use server-side exporter configuration and a separately reviewed collector-to-Azure authentication method. Clients must not receive backend storage credentials.
+The reference Azure deployment ([infrastructure](infrastructure.md)) uses the Azure Monitor exporter to upload records to a workspace-based Application Insights resource, with durable query storage in its linked Log Analytics workspace. The collector authenticates with a managed identity, local authentication is disabled, and ingestion uses a private endpoint. Clients never receive backend storage credentials.
 
 The upstream exporter documents these mappings; verify them against the pinned release:
 

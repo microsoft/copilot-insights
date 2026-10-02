@@ -1,0 +1,18 @@
+# Local quick start profile. No authentication: publish the receiver on the loopback interface only.
+exporters:
+  file/verification:
+    path: "${env:CI_LOCAL_OUTPUT_PATH:-/data/telemetry.jsonl}"
+  otlp_grpc/dashboard:
+    endpoint: "${env:CI_DASHBOARD_OTLP_ENDPOINT:-dashboard:18889}"
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      exporters: [file/verification, otlp_grpc/dashboard]
+    metrics:
+      exporters: [file/verification, otlp_grpc/dashboard]
+    logs:
+      exporters: [file/verification, otlp_grpc/dashboard]

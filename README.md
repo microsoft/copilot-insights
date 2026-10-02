@@ -1,8 +1,8 @@
 # Copilot Insights
 
-An early-stage design for privacy-conscious observability of GitHub Copilot agent usage in Visual Studio Code, built around OpenTelemetry.
+Privacy-conscious observability of GitHub Copilot agent usage in Visual Studio Code, built around OpenTelemetry.
 
-**Status: documentation and design only.** There is no implemented setup script, collector deployment, authentication helper, or dashboard in this repository yet. Configuration examples describe a proposed system, not a running service or a guarantee of support for a particular client release.
+**Status: early preview.** The repository contains a collector image with the privacy pipeline, a local quick start with automated verification, and a private Azure Container Apps template. The client setup script and authentication helper are not implemented yet, and no release has been published.
 
 ## Purpose
 
@@ -29,11 +29,46 @@ The first release does not include prompt or response capture, source code colle
 5. **Keep telemetry non-blocking.** Unavailable telemetry must not prevent normal development work.
 6. **Make setup reversible.** Preserve unrelated editor settings and existing telemetry destinations.
 
-## Getting started
+## Quick start
 
-This repository is not installable yet. Begin with a synthetic-data feasibility study on explicitly selected VS Code and Copilot versions. Do not enable collection from real users until authentication, pre-export filtering, storage access, retention, and collection notice have passed review.
+Run the collector and a local dashboard on your machine. Requires Docker with Compose and PowerShell 7.2 or later.
 
-Examples use reserved example domains and fictitious identifiers. Replace them only in an approved deployment configuration, never with credentials committed to the repository.
+```powershell
+docker compose -f deploy/local/compose.yaml up --build --detach
+./scripts/verify.ps1
+```
+
+The script sends synthetic traces, metrics, and logs that contain canary values in excluded fields, then checks the collector's sanitized output in `deploy/local/.data/telemetry.jsonl`. It fails if any canary survives or approved fields are missing. On Linux, create `deploy/local/.data` and make it writable for UID 10001 before starting.
+
+To inspect your own Copilot activity, add these VS Code user settings, reload the window, use agent chat, and open the dashboard at <http://localhost:18888>:
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "otlp-http",
+  "github.copilot.chat.otel.otlpEndpoint": "http://localhost:4318",
+  "github.copilot.chat.otel.captureContent": false,
+  "github.copilot.chat.otel.captureIdentity": false
+}
+```
+
+The local profile has no authentication, so every port is published on `127.0.0.1` only. Telemetry stays on your machine. To stop, remove the settings and run `docker compose -f deploy/local/compose.yaml down`.
+
+## Deploy to Azure
+
+The same image runs in an internal Azure Container Apps environment with private endpoints for the registry and Azure Monitor, Entra ID token validation on ingestion, and managed identity export. See [Infrastructure](docs/infrastructure.md).
+
+Do not enable collection from real users until authentication, pre-export filtering, storage access, retention, and collection notice have passed review. Examples use reserved example domains and fictitious identifiers; never commit credentials or deployment-specific values.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| [collector](collector) | Collector image: shared privacy pipeline (`base.yaml`) and `local` and `azure` profiles |
+| [deploy/local](deploy/local) | Docker Compose quick start with the collector and a dashboard |
+| [deploy/azure](deploy/azure) | Bicep template for the private Container Apps deployment |
+| [scripts/verify.ps1](scripts/verify.ps1) | Synthetic telemetry and privacy verification, locally or against a deployment |
+| [docs](docs) | Architecture, data contract, infrastructure, and rollout plan |
 
 ## Documentation
 
@@ -41,6 +76,7 @@ Examples use reserved example domains and fictitious identifiers. Replace them o
 |---|---|
 | [Architecture](docs/architecture.md) | Client, authentication, collection, storage, and query boundaries |
 | [Data contract](docs/data-contract.md) | Proposed allowed fields, privacy controls, counting rules, and correlation |
+| [Infrastructure](docs/infrastructure.md) | Private Azure topology, deployment, and verification |
 | [Rollout plan](docs/rollout-plan.md) | Self-service setup, implementation milestones, validation, and rollback |
 | [Contributing](CONTRIBUTING.md) | How to improve the proposal and prepare future implementation changes |
 | [Security](SECURITY.md) | Security expectations and private vulnerability reporting |
@@ -49,7 +85,7 @@ Examples use reserved example domains and fictitious identifiers. Replace them o
 
 ## Project maturity
 
-Public documentation establishes that Copilot can export OTel signals and custom resource attributes. This project has not yet validated an end-to-end implementation, credential lifecycle, privacy filter, storage mapping, or supported-version matrix. Those are milestone requirements, not completed features.
+Public documentation establishes that Copilot can export OTel signals and custom resource attributes. The privacy pipeline is verified with synthetic telemetry against collector 0.161.0. Exports from real Copilot clients, the credential lifecycle, the Azure deployment, storage mapping, and a supported-version matrix have not been validated yet. Those are milestone requirements, not completed features.
 
 The initial repository is prepared for private review before an open-source release. Repository visibility, organization approval, and release readiness are separate from the choice of license.
 
