@@ -1,6 +1,19 @@
 # Implementation and Rollout Plan
 
-Status: draft. No pilot, deployment, or public release is approved by this document. A reference collector, [local quick start](../README.md#quick-start), and [private Azure template](infrastructure.md) support milestones M0 and M1.
+Status: draft. No pilot, deployment, or public release is approved by this document.
+
+## Current status
+
+This table compares the repository with the milestones below. It is the place to look for what is done and what is still missing.
+
+| Milestone | State | Delivered | Still open |
+|---|---|---|---|
+| M0: Feasibility | In progress | Copilot export behavior checked against its source and documentation: settings precedence, the telemetry kill switch, emitted fields. Privacy results with synthetic telemetry. Pilot authentication decision: a local forwarder with Azure CLI tokens. | Exports from real Copilot clients; supported-version matrix; operating budgets |
+| M1: Receiver | Mostly implemented | Pinned collector, Entra ID token validation, privacy pipeline with value validation, managed identity export to Application Insights, private network template, CI | Deployment in a subscription and a storage probe; rate limits; export queue health and persistence |
+| M2: Self-service setup | Implemented for Windows | [setup-client.ps1](../scripts/setup-client.ps1) with install, start, stop, status, and uninstall; local forwarder with on-device filtering and token renewal; tests | Start at sign-in; forwarder on macOS and Linux; a credential flow that does not depend on Azure CLI |
+| M3: Analytics | Not started | | Verified backend mapping, query adapter, aggregate views, coverage and freshness indicators |
+| M4: Opt-in pilot | Not started | | Cohort, collection notice, support owner, daily review |
+| M5: Initial release | Not started | License, documentation, CI | Signed image and release provenance, support matrix, release notes |
 
 ## First delivery
 
@@ -22,41 +35,43 @@ Use the [architecture](architecture.md) and [data contract](data-contract.md) as
 
 Assign accountable owners for client engineering, ingestion/storage, analytics, security/privacy, operations, and release coordination before M0 exits. Dates and effort estimates follow feasibility; no delivery date is committed here.
 
-## Self-service setup requirements
+## Self-service setup
 
-The initial candidate is a reviewed PowerShell package for Windows. No executable setup package exists yet, so the following describes its intended behavior.
+Participants run [scripts/setup-client.ps1](../scripts/setup-client.ps1); the [client setup guide](client-setup.md) is written for them. It needs no administrator rights and no device management.
 
-Default to a dedicated user-owned VS Code user-data directory and process environment. A named profile alone is not sufficient process isolation. Do not copy authentication databases; use normal supported sign-in when necessary.
-
-| Operation | Required behavior |
+| Operation | Implemented behavior |
 |---|---|
-| Configure | Explain collection, check runtime/version and policy, validate an approved destination, enroll through an approved identity flow, and change only setup-owned configuration |
-| Start | Launch the pilot instance with process-scoped tags; start a required local filter/auth helper first; detect stale existing processes |
-| Status | Show non-sensitive effective configuration, versions, helper/auth readiness, and distinct configured/accepted/stored states |
-| Disable | Stop setup-owned activation paths and helper forwarding; guide the required pilot-instance restart; verify uploads stop |
-| Restore | Restore only setup-owned values that have not since been changed by the user; preserve unrelated settings, projects, and existing destinations |
+| Install | Refuses to continue when VS Code telemetry is off or the user already configures Copilot OpenTelemetry. Warns about environment variables and policy values that override settings. Checks that Azure CLI can get an ingestion token, installs the checksum-verified collector, adds the settings block, and starts the forwarder. Idempotent. |
+| Start | Starts the forwarder if it is not already healthy. Its settings are passed only to the forwarder process. |
+| Stop | Stops the forwarder. Copilot keeps working; nothing leaves the machine. |
+| Status | Shows mode, settings block, telemetry level, overrides, forwarder health, token availability, and recent forwarder errors. Exits with 1 when something needs attention. |
+| Uninstall | Stops the forwarder, removes exactly the settings block, and deletes the installed files. |
 
-Require dry-run, idempotence, non-secret installation state, and a tested rollback. Do not request admin rights, alter machine policy, bypass execution policy, force-close unrelated editors, or replace existing telemetry without explicit approval.
+Every operation supports `-WhatIf`. The script edits the user's normal VS Code settings rather than a separate editor instance. The `github.copilot.chat.otel.resourceAttributes` setting carries the cohort labels, so no process environment variables are needed, and nothing leaks into agent tool processes. The block between marker comments makes the change exactly reversible; tests check byte-for-byte restoration.
 
-### Illustrative native settings
+Still required before a wider rollout: start at sign-in without a visible console, macOS and Linux forwarders, and qualification of Agent Host sessions, terminal CLI, and remote hosts, which use their own exporters.
 
-This is a proposed Local-harness example, not a functioning authenticated setup. The example domain is not a service operated by this project.
+### Generated settings
 
-```json
+This is the block that Install adds, with the forwarder as the destination:
+
+```jsonc
 {
-  "github.copilot.chat.otel.enabled": true,
-  "github.copilot.chat.otel.exporterType": "otlp-http",
-  "github.copilot.chat.otel.otlpEndpoint": "https://telemetry.example.org",
-  "github.copilot.chat.otel.captureContent": false,
-  "github.copilot.chat.otel.captureIdentity": false
+	/* >>> copilot-insights: managed by setup-client.ps1; remove with "setup-client.ps1 Uninstall" */
+	"github.copilot.chat.otel.enabled": true,
+	"github.copilot.chat.otel.exporterType": "otlp-http",
+	"github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:4319",
+	"github.copilot.chat.otel.captureContent": false,
+	"github.copilot.chat.otel.captureIdentity": false,
+	"github.copilot.chat.otel.resourceAttributes": {"copilot_insights.config.version":"0.1.0","copilot_insights.rollout.ring":"pilot","copilot_insights.cohort.id":"team-a"},
+	/* <<< copilot-insights */
+	"editor.fontSize": 14
 }
 ```
 
-The configuration contains no credentials. An authenticated receiver must reject it until credential provisioning is added. If a local helper is needed, the actual endpoint is its approved loopback receiver; the helper performs outbound filtering and authenticated forwarding.
+The settings contain no credentials. Enterprise policy, `COPILOT_OTEL_*` variables, and `OTEL_EXPORTER_OTLP_*` variables take precedence over these settings, and Copilot exports nothing while `telemetry.telemetryLevel` is `off`. The script reports all of these instead of overriding them.
 
-The launcher can attach approved static tags through `OTEL_RESOURCE_ATTRIBUTES` in the new editor process environment. Setting a variable in an already-running integrated terminal does not change the parent exporter. Managed configuration can also take precedence; detect conflicts and stop rather than override enterprise policy.
-
-A one-time access token is not a credential-renewal design. Keep upload secrets out of tool subprocesses. Local and Agent Host sessions, terminal CLI, remote hosts, and other operating systems each require their own compatibility results.
+The forwarder obtains tokens through Azure CLI and renews them automatically. Tokens never appear in VS Code settings, the editor's environment, or tool subprocesses. Local and Agent Host sessions, terminal CLI, remote hosts, and other operating systems each require their own compatibility results.
 
 ## Backend implementation requirements
 
@@ -110,8 +125,7 @@ Offline participants must update and requalify before enrollment is restored. Re
 ## Open decisions
 
 - Exact supported client versions and runtime scope.
-- Native authentication versus a local helper, including approved credential lifecycle.
-- Required local filtering and how user telemetry preferences are enforced.
+- Production credential flow: the pilot forwarder uses Azure CLI tokens; a dedicated public client with broker sign-in could remove that dependency.
 - Initial storage backend, deployment packaging, and regional requirements.
 - Approved retention, access, small-cohort suppression, and budget limits.
 - Analytics UI versus integration with an existing visualization tool for the first pilot.

@@ -1,6 +1,6 @@
 # Data Contract and Privacy
 
-Status: proposed contract. The reference allow-lists are in [collector/config/base.yaml](../collector/config/base.yaml) and are verified with synthetic canaries. Field availability in real Copilot exports, and backend mappings, require validation before real-user collection.
+Status: proposed contract with a reference implementation. The allow-lists below are enforced by [collector/config/base.yaml](../collector/config/base.yaml) on the participant's machine and on the server, and they are checked with synthetic canaries. Field names were checked against Copilot's published emitter source and monitoring documentation. Field availability in real Copilot exports, and backend mappings, still require validation before real-user collection.
 
 ## Collection purpose
 
@@ -22,32 +22,47 @@ The initial collection is metadata-only. Even metadata may be sensitive or linka
 
 These are candidate classes, not permission to forward every `gen_ai.*` or vendor-prefixed field. Adopt explicit typed allow-lists for every signal and version.
 
+## Reference allow-lists
+
+Everything not listed here is dropped. Scope attributes are always removed.
+
+| Signal | Records kept | Attributes kept |
+|---|---|---|
+| Resource (all signals) | Not applicable | `service.name`, `service.version`, `session.id`, `copilot_insights.organization.id` (always set by the central collector), `copilot_insights.cohort.id`, `copilot_insights.config.version`, `copilot_insights.rollout.ring` |
+| Spans | Operations `invoke_agent`, `chat`, and `execute_tool`. Span names are replaced by the operation name; span events and status messages are removed. | Operation, provider, agent name and type, conversation ID, request and response model, finish reasons, input, output, cache, and reasoning token counts, tool name, type, and call ID, edit type, skill name, hashed MCP server name, MCP tool name, turn count, time to first token, error type |
+| Metrics | `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`, and the `copilot_chat.` metrics for tool call count and duration, agent invocation duration, agent turn count, session count, time to first token, user feedback count, edit acceptance count, and chat edit outcome count | Operation, provider, agent name, request and response model, token type, tool name, `success`, `rating`, edit source, edit outcome, language ID, error type |
+| Log events | `copilot_chat.user.feedback` and `copilot_chat.edit.feedback` only. Bodies are cleared. | `event.name`, `rating`, `outcome`, `language_id`, `edit_surface`, `participant`, `conversation_id`, `gen_ai.conversation.id` |
+
+Copilot emits other log events, such as inference details, tool calls, and agent turns, but they describe the same operations as the spans. Keeping them would invite double counting, so only feedback events, which have no span equivalent, pass.
+
+**Value rule.** A string attribute value is kept only if it starts with a letter or digit, contains only letters, digits, spaces, and `_ . : / + -`, does not contain `://`, and is at most 128 characters long. Anything else, such as an email address, a Windows path, a URL, or a sentence with punctuation, becomes `redacted`. The rule applies to resource, span, metric, and log attributes. It does not inspect values inside arrays.
+
 ## Excluded data
 
 Do not retain prompts, model responses, system instructions, source code, document/file contents, tool arguments/results, tool schemas, terminal commands/output, file paths, raw repository URLs, branch names, account names, email addresses, OS usernames, machine names, credentials, or arbitrary free-form payloads.
 
 Unknown fields and unsupported record shapes must be dropped or rejected without logging their values. Review span names, status descriptions, event attributes, links, resource/scope fields, and log bodies as well as the obvious content fields.
 
-Disabling Copilot content and identity capture is necessary but not sufficient: other metadata, including repository context, can still be emitted. If prohibited data remains, add a local sanitizer before off-device export or stop collection until the data policy is explicitly revised.
+Disabling Copilot content and identity capture is necessary but not sufficient: other metadata, including repository context, can still be emitted. The forwarder therefore applies the allow-lists before off-device export. If prohibited data remains, stop collection until the data policy is explicitly revised.
 
 ## Configuration and preferences
 
-The setup package must respect existing enterprise policy and user telemetry preferences. Test the interaction with `telemetry.telemetryLevel`; do not assume an independently configured exporter automatically follows another telemetry library's opt-out behavior.
+Copilot resolves its OpenTelemetry configuration in this order: enterprise policy, then `COPILOT_OTEL_*` environment variables, then `OTEL_EXPORTER_OTLP_*` environment variables, then VS Code settings. It exports nothing while VS Code `telemetry.telemetryLevel` is `off`. The setup script respects that opt-out instead of changing it, refuses to replace a participant's own Copilot OpenTelemetry settings, and reports environment variables and policy values that would override its settings.
 
-User settings are not policy enforcement. Detect conflicting environment variables and settings that independently enable export, and verify effective behavior. Never enable content capture temporarily against real user work to troubleshoot the collector.
+User settings are not policy enforcement. Verify effective behavior with the script's Status action. Never enable content capture temporarily against real user work to troubleshoot the collector.
 
 ## Custom resource attributes
 
-Proposed project-specific labels:
+Project-specific labels, set by the setup script through the `github.copilot.chat.otel.resourceAttributes` setting:
 
 | Attribute | Meaning |
 |---|---|
-| `copilot_insights.organization.id` | Organization label; the reference collector overwrites any client value with its deployment setting |
-| `copilot_insights.cohort.id` | Approved pilot/team cohort where assignment is accurate |
+| `copilot_insights.organization.id` | Organization label; the forwarder removes any client value, and the central collector sets its deployment value |
+| `copilot_insights.cohort.id` | Approved pilot/team cohort where assignment is accurate (`-Cohort`) |
 | `copilot_insights.config.version` | Setup/configuration revision |
-| `copilot_insights.rollout.ring` | Lab, pilot, or another approved rollout group |
+| `copilot_insights.rollout.ring` | `local`, `pilot`, or another approved rollout group (`-Ring`) |
 
-These are not built-in Copilot fields. Restrict length and allowed values, and do not place personal information into tags.
+These are not built-in Copilot fields. The setup script accepts only short identifier-like values, and the value rule applies to them as well. Do not place personal information into tags.
 
 Fixed resource attributes label a configured runtime. They do not automatically follow the currently active project. Dynamic project attribution is a separate feature requiring a supported association between operation and workspace. Multiple windows, multi-root workspaces, worktrees, remote hosts, and non-Git folders need explicit behavior. Unknown context stays unattributed.
 

@@ -1,6 +1,13 @@
 # Infrastructure
 
-Status: reference deployment. The template in [deploy/azure](../deploy/azure) compiles and lints cleanly, but the maintainers have not yet deployed it in a subscription. Validate it in a non-production subscription before onboarding users.
+Status: reference deployment. The template in [deploy/azure](../deploy/azure) is written in [Bicep](https://learn.microsoft.com/azure/azure-resource-manager/bicep/overview), Azure's language for declaring infrastructure. It compiles and passes the Bicep linter without warnings, but the maintainers have not yet deployed it in a subscription. Validate it in a non-production subscription before onboarding users.
+
+## Why this design
+
+- **Private by default.** Usage telemetry is still metadata about people's work, so nothing in the path has a public endpoint: not the collector, the registry, or the storage ingestion.
+- **Authenticated, not just reachable.** Network reachability does not identify a sender. The collector accepts only Entra ID tokens issued for your ingestion app, to users you assign.
+- **No shared secrets for telemetry.** The collector uses a managed identity to pull its image and to write to Application Insights, which has local authentication disabled, and participants use their own sign-in. The only key in the template is the operations workspace key that Container Apps needs for platform logs.
+- **Standard parts.** Container Apps, Container Registry, Application Insights, and Log Analytics are standard Azure services, and the collector is the upstream OpenTelemetry Collector image.
 
 ## Topology
 
@@ -9,7 +16,7 @@ Every data path between the client network, the collector, the registry, and tel
 ```mermaid
 flowchart LR
     subgraph Client["Client network (peered)"]
-        Dev["Dev Box: VS Code + Copilot"]
+        Dev["Dev Box: VS Code + forwarder"]
     end
     subgraph VNet["Collector virtual network"]
         subgraph Env["Internal Container Apps environment"]
@@ -88,16 +95,20 @@ $body = Join-Path ([IO.Path]::GetTempPath()) 'copilot-insights-api.json'
 @{ api = @{ requestedAccessTokenVersion = 2; oauth2PermissionScopes = @($scope) } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $body
 az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($app.id)" --headers 'Content-Type=application/json' --body "@$body"
 
+# Pre-authorize Azure CLI for the scope; participants' forwarders get their tokens through Azure CLI.
+$azureCli = @{ appId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'; delegatedPermissionIds = @($scope.id) }
+@{ api = @{ requestedAccessTokenVersion = 2; oauth2PermissionScopes = @($scope); preAuthorizedApplications = @($azureCli) } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $body
+az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($app.id)" --headers 'Content-Type=application/json' --body "@$body"
+
 az ad sp create --id $app.appId
 az ad sp update --id $app.appId --set appRoleAssignmentRequired=true
 $app.appId
 ```
 
-- Use the printed application ID as `ingestionAudience`.
+- Use the printed application ID as `ingestionAudience`. Participants use the scope `api://<application-id>/Telemetry.Write`.
 - `appRoleAssignmentRequired` means only users and groups assigned to the enterprise application can obtain tokens. Assign pilot participants under **Enterprise applications > copilot-insights-ingestion > Users and groups**.
+- Pre-authorizing Azure CLI (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`, a Microsoft first-party client) means participants are not asked to consent. It does not widen access: only assigned users get tokens, and only for this scope. If your organization does not allow it, participants cannot use the forwarder until a dedicated client application replaces Azure CLI.
 - Token issuance authenticates the uploader. It does not prove that uploaded telemetry is accurate; the collector still enforces the data contract.
-
-To verify the deployment with Azure CLI tokens, an administrator can pre-authorize the Azure CLI client (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) for the `Telemetry.Write` scope. Remove that authorization after testing if your organization does not allow it permanently.
 
 ## Deploy
 
@@ -142,12 +153,28 @@ The script sends synthetic telemetry with canary values and prints two queries. 
 - The collector endpoint does not resolve or respond from outside connected networks.
 - `ContainerAppConsoleLogs_CL` in the operations workspace shows no repeated export or authentication errors.
 
-## Connect a pilot client
+## Connect pilot participants
 
-The native Copilot exporter sends no credentials unless configured with a header, and the authentication helper in the [architecture](architecture.md) is not implemented yet. Until it is:
+Give each participant:
 
-- Use the local quick start for client-side trials.
-- For a time-boxed lab test with a synthetic workspace only, a short-lived token can be supplied through `OTEL_EXPORTER_OTLP_HEADERS` in the editor's launch environment. Tokens expire within about an hour, and agent tool subprocesses can inherit the variable, so do not use this with real projects.
+- The collector endpoint: the `collectorEndpoint` deployment output.
+- The scope: `api://<application-id>/Telemetry.Write`.
+- An assignment to the enterprise application.
+
+They follow [Client setup](client-setup.md). Their machines need Azure CLI and a network path to the collector: a peered network whose DNS resolves the collector to `environmentStaticIp`.
+
+Each forwarder filters telemetry on the device and authenticates with the participant's own sign-in, so nobody handles a shared secret. To revoke a participant, remove their assignment. Tokens already issued stay valid until they expire, typically within 60 to 90 minutes.
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to check |
+|---|---|---|
+| Participants see `AADSTS65001` | Azure CLI is not pre-authorized | Rerun the pre-authorization step in [Register the ingestion API](#register-the-ingestion-api) |
+| Participants see `AADSTS50105` | The participant is not assigned | **Enterprise applications > copilot-insights-ingestion > Users and groups** |
+| Forwarder logs show HTTP 401 | Token issuer or audience mismatch | `ingestionAudience` must be the application ID, and the app must request version 2 tokens (`requestedAccessTokenVersion = 2`) |
+| Forwarder logs show DNS or connection errors | No network path | From the client, the collector name must resolve to `environmentStaticIp`. Check peering, the environment DNS zone links, and `allowedClientCidrs` |
+| Requests succeed but no data reaches the usage workspace | Export failure | `ContainerAppConsoleLogs_CL` for `azure_monitor` errors; the `Monitoring Metrics Publisher` assignment; Azure Monitor names resolving to private addresses from the collector network |
+| The revision never becomes healthy | Image pull or configuration error | `ContainerAppSystemLogs_CL`; the registry private endpoint and the `AcrPull` assignment |
 
 ## Operations
 
@@ -163,4 +190,4 @@ The native Copilot exporter sends no credentials unless configured with a header
 - Route egress through a firewall, and disable public query access where operators work from connected networks.
 - Use `PrivateOnly` Azure Monitor access mode on dedicated networks.
 - Enable zone redundancy, and add a persistent sending queue.
-- Automate the image build, signing, and template validation in CI.
+- Sign and publish the collector image from CI. CI currently builds and tests the image but does not publish it.

@@ -1,7 +1,8 @@
 # Shared receiver and privacy pipeline. Always layer exactly one profile on top:
-#   --config=base.yaml --config=local.yaml   (localhost quick start, no authentication)
-#   --config=base.yaml --config=azure.yaml   (authenticated ingestion, Azure Monitor export)
-# Profiles add exporters and extensions only, so local verification exercises the same filters as production.
+#   --config=base.yaml --config=local.yaml       (localhost quick start, no authentication)
+#   --config=base.yaml --config=azure.yaml       (authenticated ingestion, Azure Monitor export)
+#   --config=base.yaml --config=forwarder.yaml   (participant machine: filter, then forward with a token)
+# Profiles add exporters, extensions, and listener settings only, so every deployment applies the same filters.
 
 extensions:
   health_check:
@@ -31,22 +32,27 @@ processors:
     metrics:
       metric:
         - 'not IsMatch(name, "^(gen_ai[.]client[.]operation[.]duration|gen_ai[.]client[.]token[.]usage|copilot_chat[.](tool[.]call[.]count|tool[.]call[.]duration|agent[.]invocation[.]duration|agent[.]turn[.]count|session[.]count|time_to_first_token|user[.]feedback[.]count|edit[.]acceptance[.]count|chat_edit[.]outcome[.]count))$")'
+    # Feedback events are the only log records without an equivalent span or metric.
+    logs:
+      log_record:
+        - 'attributes["event.name"] != "copilot_chat.user.feedback" and attributes["event.name"] != "copilot_chat.edit.feedback"'
 
-  # Keeps only allow-listed attributes on the records that remain.
+  # Keeps only allow-listed attributes on the records that remain, then replaces any string value that is not
+  # identifier-like (for example an email address, path, URL, or free text) with "redacted".
   transform/allowlist:
     error_mode: propagate
     trace_statements:
       - context: resource
         statements: &resource_statements
           - keep_keys(attributes, ["service.name", "service.version", "session.id", "copilot_insights.organization.id", "copilot_insights.cohort.id", "copilot_insights.config.version", "copilot_insights.rollout.ring"])
-          - truncate_all(attributes, 128)
+          - &validate_values 'replace_all_patterns(attributes, "value", "(?s)^(?:[^A-Za-z0-9].*|.*[^A-Za-z0-9 _.:/+-].*|.*://.*|.{129,})$$", "redacted")'
       - context: scope
         statements: &scope_statements
           - keep_keys(attributes, [])
       - context: span
         statements:
           - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.conversation.id", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.response.finish_reasons", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.reasoning.output_tokens", "gen_ai.tool.name", "gen_ai.tool.type", "gen_ai.tool.call.id", "github.copilot.agent.type", "github.copilot.tool.parameters.edit_type", "github.copilot.tool.parameters.skill_name", "github.copilot.tool.parameters.mcp_server_name_hash", "github.copilot.tool.parameters.mcp_tool_name", "copilot_chat.turn_count", "copilot_chat.time_to_first_token", "error.type"])
-          - truncate_all(attributes, 256)
+          - *validate_values
           # Span names embed model and tool names; the operation attribute is the reviewed equivalent.
           - set(name, attributes["gen_ai.operation.name"])
           - set(status.message, "")
@@ -57,8 +63,8 @@ processors:
         statements: *scope_statements
       - context: log
         statements:
-          - keep_keys(attributes, ["event.name", "gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.conversation.id", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.tool.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "error.type"])
-          - truncate_all(attributes, 256)
+          - keep_keys(attributes, ["event.name", "rating", "outcome", "language_id", "edit_surface", "participant", "conversation_id", "gen_ai.conversation.id"])
+          - *validate_values
           - set(body, "")
     metric_statements:
       - context: resource
@@ -67,8 +73,8 @@ processors:
         statements: *scope_statements
       - context: datapoint
         statements:
-          - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.token.type", "gen_ai.tool.name", "copilot_chat.edit.source", "error.type"])
-          - truncate_all(attributes, 256)
+          - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.agent.name", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.token.type", "gen_ai.tool.name", "success", "rating", "copilot_chat.edit.source", "copilot_chat.edit.outcome", "copilot_chat.language_id", "error.type"])
+          - *validate_values
 
   # The organization comes from deployment configuration; a client-supplied value is overwritten.
   resource/organization:
@@ -94,4 +100,4 @@ service:
       processors: [memory_limiter, filter/allowlist, transform/allowlist, resource/organization, batch]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, transform/allowlist, resource/organization, batch]
+      processors: [memory_limiter, filter/allowlist, transform/allowlist, resource/organization, batch]

@@ -2,7 +2,7 @@
 
 ## Current status
 
-Copilot Insights is an early-stage project. It provides a reference collector image, a local quick start, and an Azure template, but no published release, hosted telemetry endpoint, or production support SLA. The client setup script, authentication helper, and analytics views still require implementation.
+Copilot Insights is an early-stage project. It provides a reference collector image, a local quick start, a client setup script with a local forwarder for Windows, and an Azure template, but no published release, hosted telemetry endpoint, or production support SLA. Analytics views are not implemented yet.
 
 ## Questions and issues
 

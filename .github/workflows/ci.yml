@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  collector:
+    name: Collector privacy pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the local quick start
+        run: |
+          mkdir -p deploy/local/.data
+          chmod 777 deploy/local/.data
+          docker compose -f deploy/local/compose.yaml up --build --detach
+
+      - name: Verify the privacy pipeline
+        shell: pwsh
+        run: ./scripts/verify.ps1 -TimeoutSeconds 60
+
+      - name: Validate the azure and forwarder profiles
+        run: |
+          for profile in azure forwarder; do
+            docker run --rm \
+              -e CI_ORGANIZATION_ID=ci \
+              -e CI_OIDC_ISSUER_URL=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0 \
+              -e CI_OIDC_AUDIENCE=00000000-0000-0000-0000-000000000001 \
+              -e AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000002 \
+              -e 'APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=00000000-0000-0000-0000-000000000003;IngestionEndpoint=https://example.invalid/' \
+              -e CI_UPSTREAM_ENDPOINT=https://collector.example.invalid \
+              -e CI_UPSTREAM_SCOPE=api://00000000-0000-0000-0000-000000000001/Telemetry.Write \
+              copilot-insights-collector:local validate \
+              --config=/etc/copilot-insights/base.yaml "--config=/etc/copilot-insights/${profile}.yaml"
+          done
+
+      - name: Collector logs
+        if: failure()
+        run: docker compose -f deploy/local/compose.yaml logs collector
+
+      - name: Stop the local quick start
+        if: always()
+        run: docker compose -f deploy/local/compose.yaml down
+
+  template:
+    name: Azure template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build and lint
+        run: |
+          az bicep install
+          bicep="$HOME/.azure/bin/bicep"
+          "$bicep" build deploy/azure/main.bicep --stdout > /dev/null
+          "$bicep" build-params deploy/azure/main.example.bicepparam --stdout > /dev/null
+          "$bicep" lint deploy/azure/main.bicep 2>&1 | tee lint.log
+          if grep -q ': Warning ' lint.log; then echo 'Bicep lint reported warnings.'; exit 1; fi
+
+  client:
+    name: Client setup script
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test setup-client.ps1
+        shell: pwsh
+        run: ./scripts/tests/setup-client.tests.ps1

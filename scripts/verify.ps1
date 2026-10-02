@@ -37,6 +37,7 @@ function New-HexId([int] $byteCount) {
 function Get-TimeNs([long] $offsetMs) { [string]($nowNs + $offsetMs * 1000000L) }
 function New-StringAttribute([string] $key, [string] $value) { @{ key = $key; value = @{ stringValue = $value } } }
 function New-IntAttribute([string] $key, [long] $value) { @{ key = $key; value = @{ intValue = [string]$value } } }
+function New-BoolAttribute([string] $key, [bool] $value) { @{ key = $key; value = @{ boolValue = $value } } }
 function Get-AttributeValue($attributes, [string] $key) {
     $attribute = @($attributes) | Where-Object { $_.key -eq $key } | Select-Object -First 1
     if ($attribute) { $attribute.value } else { $null }
@@ -62,6 +63,7 @@ $resource = @{
         New-StringAttribute 'session.id' "session-$runId"
         New-StringAttribute 'copilot_insights.config.version' $configVersion
         New-StringAttribute 'copilot_insights.organization.id' "$canary-forged-organization"
+        New-StringAttribute 'copilot_insights.cohort.id' "$canary;not-an-identifier"
         New-StringAttribute 'host.name' "$canary-host"
         New-StringAttribute 'process.user.name' "$canary-os-user"
     )
@@ -109,7 +111,9 @@ $traces = @{
                                 New-StringAttribute 'gen_ai.conversation.id' $conversationId
                                 New-StringAttribute 'gen_ai.tool.name' 'readFile'
                                 New-StringAttribute 'gen_ai.tool.call.arguments' "{`"path`":`"$canary-arguments`"}"
+                                New-StringAttribute 'gen_ai.tool.description' "$canary-tool-description"
                                 New-StringAttribute 'github.copilot.tool.parameters.file_path' "C:/$canary/file.txt"
+                                New-StringAttribute 'github.copilot.tool.parameters.skill_name' "C:\Users\$canary\skill"
                             )
                             events = @(@{ name = "$canary-event"; timeUnixNano = Get-TimeNs -2350; attributes = @(New-StringAttribute 'exception.message' "$canary-exception") })
                         }
@@ -118,6 +122,7 @@ $traces = @{
                             startTimeUnixNano = Get-TimeNs -2200; endTimeUnixNano = Get-TimeNs -2100
                             attributes = @(
                                 New-StringAttribute 'gen_ai.operation.name' 'execute_hook'
+                                New-StringAttribute 'copilot_chat.hook_command' "$canary-hook-command"
                                 New-StringAttribute 'copilot_chat.hook_input' "$canary-hook-input"
                             )
                         }
@@ -140,8 +145,20 @@ $metrics = @{
                                         asInt = '3'; startTimeUnixNano = Get-TimeNs -60000; timeUnixNano = Get-TimeNs 0
                                         attributes = @(
                                             New-StringAttribute 'gen_ai.tool.name' 'readFile'
+                                            New-BoolAttribute 'success' $true
                                             New-StringAttribute 'file.path' "$canary-metric-path"
+                                            New-StringAttribute 'server.address' "$canary-server-address"
                                         )
+                                    })
+                            }
+                        }
+                        @{
+                            name = 'copilot_chat.user.feedback.count'; unit = '{vote}'
+                            sum  = @{
+                                aggregationTemporality = 2; isMonotonic = $true
+                                dataPoints = @(@{
+                                        asInt = '1'; startTimeUnixNano = Get-TimeNs -60000; timeUnixNano = Get-TimeNs 0
+                                        attributes = @(New-StringAttribute 'rating' 'positive')
                                     })
                             }
                         }
@@ -162,17 +179,30 @@ $logs = @{
             resource  = $resource
             scopeLogs = @(@{
                     scope      = $scope
-                    logRecords = @(@{
+                    logRecords = @(
+                        @{
                             timeUnixNano = Get-TimeNs 0; observedTimeUnixNano = Get-TimeNs 0
                             severityNumber = 9; severityText = 'INFO'
                             traceId = $traceId; spanId = $chatSpanId
                             body = @{ stringValue = "$canary-log-body" }
                             attributes = @(
                                 New-StringAttribute 'event.name' 'copilot_chat.user.feedback'
+                                New-StringAttribute 'rating' 'negative'
+                                New-StringAttribute 'participant' "$canary@example.invalid"
                                 New-StringAttribute 'gen_ai.conversation.id' $conversationId
                                 New-StringAttribute 'gen_ai.input.messages' "$canary-log-prompt"
                             )
-                        })
+                        }
+                        @{
+                            timeUnixNano = Get-TimeNs 0; observedTimeUnixNano = Get-TimeNs 0
+                            severityNumber = 9; severityText = 'INFO'
+                            body = @{ stringValue = 'GenAI inference details' }
+                            attributes = @(
+                                New-StringAttribute 'event.name' 'gen_ai.client.inference.operation.details'
+                                New-StringAttribute 'gen_ai.conversation.id' "$canary-unapproved-event"
+                            )
+                        }
+                    )
                 })
         })
 }
@@ -183,8 +213,13 @@ if ($remote) {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) { throw 'Could not acquire an access token with Azure CLI.' }
     $headers.Authorization = "Bearer $token"
 } elseif ($HealthEndpoint) {
-    $health = Invoke-WebRequest -Uri $HealthEndpoint -SkipHttpErrorCheck -TimeoutSec 10
-    Assert-True ($health.StatusCode -eq 200) "Collector health endpoint responded ($HealthEndpoint)"
+    $healthDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $healthy = $false
+        try { $healthy = (Invoke-WebRequest -Uri $HealthEndpoint -SkipHttpErrorCheck -TimeoutSec 5).StatusCode -eq 200 } catch { $healthy = $false }
+        if (-not $healthy) { Start-Sleep -Milliseconds 500 }
+    } while (-not $healthy -and (Get-Date) -lt $healthDeadline)
+    Assert-True $healthy "Collector health endpoint responded ($HealthEndpoint)"
 }
 
 $rejectedFields = @{ 'v1/traces' = 'rejectedSpans'; 'v1/metrics' = 'rejectedDataPoints'; 'v1/logs' = 'rejectedLogRecords' }
@@ -235,20 +270,32 @@ Assert-True (-not ($spans | Where-Object { Get-OptionalProperty $_ 'events' })) 
 $chat = $spans | Where-Object name -eq 'chat' | Select-Object -First 1
 Assert-True ((Get-AttributeValue $chat.attributes 'gen_ai.usage.input_tokens').intValue -eq '1200') 'Token counts preserved as integers'
 Assert-True ((Get-AttributeValue $chat.attributes 'gen_ai.request.model').stringValue -eq 'example-model') 'Model name preserved'
+$tool = $spans | Where-Object name -eq 'execute_tool' | Select-Object -First 1
+Assert-True ((Get-AttributeValue $tool.attributes 'github.copilot.tool.parameters.skill_name').stringValue -eq 'redacted') 'Path-shaped value in an allowed field replaced with "redacted"'
 
 $allowedResourceKeys = @('service.name', 'service.version', 'session.id', 'copilot_insights.organization.id', 'copilot_insights.cohort.id', 'copilot_insights.config.version', 'copilot_insights.rollout.ring')
 $resourceKeys = @($resourceSpans | ForEach-Object { $_.resource.attributes } | ForEach-Object key | Sort-Object -Unique)
 Assert-True (-not ($resourceKeys | Where-Object { $_ -notin $allowedResourceKeys })) "Resource keys limited to the allow-list ($($resourceKeys -join ', '))"
 $organization = (Get-AttributeValue $resourceSpans[0].resource.attributes 'copilot_insights.organization.id').stringValue
 Assert-True ($organization -eq $ExpectedOrganizationId) "Client-supplied organization replaced with configured value '$ExpectedOrganizationId'"
+$cohort = (Get-AttributeValue $resourceSpans[0].resource.attributes 'copilot_insights.cohort.id').stringValue
+Assert-True ($cohort -eq 'redacted') 'Non-identifier resource value replaced with "redacted"'
 
-$metricNames = @($metricBatches | ForEach-Object { $_.resourceMetrics } | ForEach-Object { $_.scopeMetrics } | ForEach-Object { $_.metrics } | ForEach-Object name | Sort-Object -Unique)
-Assert-True (($metricNames -join ',') -eq 'copilot_chat.tool.call.count') "Only approved metrics kept ($($metricNames -join ', '))"
+$metricList = @($metricBatches | ForEach-Object { $_.resourceMetrics } | ForEach-Object { $_.scopeMetrics } | ForEach-Object { $_.metrics })
+$metricNames = @($metricList | ForEach-Object name | Sort-Object -Unique)
+Assert-True (($metricNames -join ',') -eq 'copilot_chat.tool.call.count,copilot_chat.user.feedback.count') "Only approved metrics kept ($($metricNames -join ', '))"
+$toolPoint = ($metricList | Where-Object name -eq 'copilot_chat.tool.call.count' | Select-Object -First 1).sum.dataPoints[0]
+Assert-True ((Get-AttributeValue $toolPoint.attributes 'success').boolValue -eq $true) 'Tool call success dimension preserved'
+$feedbackPoint = ($metricList | Where-Object name -eq 'copilot_chat.user.feedback.count' | Select-Object -First 1).sum.dataPoints[0]
+Assert-True ((Get-AttributeValue $feedbackPoint.attributes 'rating').stringValue -eq 'positive') 'Feedback rating dimension preserved'
 
 $logRecords = @($logBatches | ForEach-Object { $_.resourceLogs } | ForEach-Object { $_.scopeLogs } | ForEach-Object { $_.logRecords })
 $logBodies = @($logRecords | ForEach-Object { $body = Get-OptionalProperty $_ 'body'; if ($body) { Get-OptionalProperty $body 'stringValue' } })
+Assert-True ($logRecords.Count -eq 1) "Only approved events kept ($($logRecords.Count) log record)"
 Assert-True (-not ($logBodies | Where-Object { $_ })) 'Log bodies cleared'
-Assert-True ((Get-AttributeValue $logRecords[0].attributes 'event.name').stringValue -eq 'copilot_chat.user.feedback') 'Approved log attributes preserved'
+Assert-True ((Get-AttributeValue $logRecords[0].attributes 'event.name').stringValue -eq 'copilot_chat.user.feedback') 'Feedback event name preserved'
+Assert-True ((Get-AttributeValue $logRecords[0].attributes 'rating').stringValue -eq 'negative') 'Feedback event rating preserved'
+Assert-True ((Get-AttributeValue $logRecords[0].attributes 'participant').stringValue -eq 'redacted') 'Email-shaped event value replaced with "redacted"'
 
 Write-Host ''
 Write-Host "Verification passed (run $runId)." -ForegroundColor Green

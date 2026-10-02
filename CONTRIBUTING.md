@@ -1,6 +1,6 @@
 # Contributing
 
-Copilot Insights is an early-stage project with a reference collector, local quick start, and Azure template. Contributions should improve the design, make assumptions testable, or deliver a narrowly scoped implementation milestone. Do not describe planned components as shipped features.
+Copilot Insights is an early-stage project with a reference collector, local quick start, client setup script, and Azure template. Contributions should improve the design, make assumptions testable, or deliver a narrowly scoped implementation milestone. Do not describe planned components as shipped features.
 
 ## Propose a change
 
@@ -31,9 +31,12 @@ Before proposing documentation changes:
 
 ## Implementation checks
 
+The [CI workflow](.github/workflows/ci.yml) runs these checks on every pull request. Run them locally first:
+
 - For collector changes, run the local quick start and `./scripts/verify.ps1`. Add canary cases to the script when you allow a new field or signal.
+- For setup script changes, run `./scripts/tests/setup-client.tests.ps1`. It uses temporary files only.
 - For template changes, run `az bicep build --file deploy/azure/main.bicep` and `az bicep lint --file deploy/azure/main.bicep` with no warnings.
-- Update the pinned image tag and digest together.
+- Update the pinned image tag and digest together. When you change the collector version, also update the version and archive checksum in `scripts/setup-client.ps1`.
 
 New components need focused tests for their behavior, especially authentication, safe setup and restore, and counting correctness.
 

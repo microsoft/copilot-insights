@@ -1,0 +1,54 @@
+# Forwarder profile: runs on a participant's machine, next to VS Code.
+#   --config=base.yaml --config=forwarder.yaml
+# Applies the shared privacy pipeline before anything leaves the device, then forwards the result to the central
+# collector with a Microsoft Entra ID token from the participant's Azure CLI sign-in, so VS Code never holds a
+# credential. scripts/setup-client.ps1 installs and runs it; the script sets AZURE_TOKEN_CREDENTIALS=AzureCLICredential.
+extensions:
+  health_check:
+    endpoint: "127.0.0.1:${env:CI_FORWARDER_HEALTH_PORT:-13134}"
+  azure_auth:
+    use_default: true
+    scopes:
+      - "${env:CI_UPSTREAM_SCOPE}"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        # Loopback only, on a non-default port, so other local OTLP senders do not reach it by accident.
+        endpoint: "127.0.0.1:${env:CI_FORWARDER_PORT:-4319}"
+
+processors:
+  # A desktop process gets a fixed memory budget instead of a share of the machine.
+  memory_limiter:
+    limit_percentage: 0
+    spike_limit_percentage: 0
+    limit_mib: 256
+    spike_limit_mib: 64
+  # The central collector assigns the organization from its own configuration.
+  resource/organization:
+    attributes:
+      - key: copilot_insights.organization.id
+        action: delete
+
+exporters:
+  otlp_http/upstream:
+    endpoint: "${env:CI_UPSTREAM_ENDPOINT}"
+    auth:
+      authenticator: azure_auth
+
+service:
+  extensions: [health_check, azure_auth]
+  telemetry:
+    logs:
+      output_paths: ["${env:CI_FORWARDER_LOG_PATH:-stderr}"]
+    # No internal metrics listener: its default port (8888) is often taken on developer machines.
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      exporters: [otlp_http/upstream]
+    metrics:
+      exporters: [otlp_http/upstream]
+    logs:
+      exporters: [otlp_http/upstream]

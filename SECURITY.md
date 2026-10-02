@@ -15,7 +15,7 @@ please review the latest guidance for Microsoft repositories at
 
 ## Project status
 
-This repository contains an early reference implementation, not a supported release. No hosted endpoint, supported binary, credential helper, or production-security guarantee is provided.
+This repository contains an early reference implementation, not a supported release. No hosted endpoint, published release, or production-security guarantee is provided.
 
 Organizations adopting a future implementation remain responsible for their collection approval, identity configuration, access controls, retention, and deployment security.
 
@@ -23,7 +23,7 @@ Organizations adopting a future implementation remain responsible for their coll
 
 Do not disclose a vulnerability, credential, private telemetry, or exploit containing sensitive data in a public issue or pull request.
 
-For security concerns in this Microsoft-hosted project, use the [Microsoft Security Response Center reporting portal](https://msrc.microsoft.com/create-report). For additional guidance, see [Microsoft open-source security reporting](https://aka.ms/opensource/security).
+For security concerns in this Microsoft-hosted project, use the [Microsoft Security Response Center reporting portal](https://msrc.microsoft.com/create-report).
 
 Include affected versions or documentation references, impact, and a minimal synthetic reproduction. Do not send unrelated user conversations, repositories, or secrets. Report vulnerabilities in upstream products to their respective maintainers.
 

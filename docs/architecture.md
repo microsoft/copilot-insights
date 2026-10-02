@@ -1,6 +1,6 @@
 # Architecture
 
-Status: proposed design with a reference implementation of the collector, local quick start, and private Azure deployment ([infrastructure](infrastructure.md)). The client setup script and local helper are not implemented.
+Status: design with a reference implementation of every component shown below except analytics: the collector and its privacy pipeline, the local quick start, the client setup script and forwarder, and the private Azure deployment ([infrastructure](infrastructure.md)).
 
 ## System boundaries
 
@@ -8,39 +8,37 @@ Copilot Insights observes instrumented agent activity through OpenTelemetry. It 
 
 ```mermaid
 flowchart LR
-    Setup["User-run setup"] -. "Configuration" .-> Editor["VS Code / Copilot"]
+    Setup["setup-client.ps1"] -. "Settings block" .-> Editor["VS Code / Copilot"]
     Editor --> Model["Existing model provider"]
-    Editor -. "OTLP" .-> Helper["Local filter / authentication helper"]
-    Helper --> Ingress["Authenticated HTTPS ingestion"]
-    Editor -. "Direct only when approved gates pass" .-> Ingress
-    Ingress --> Collector["OpenTelemetry Collector"]
+    Editor -. "OTLP over loopback" .-> Forwarder["Forwarder: privacy filter, Entra ID token"]
+    Forwarder --> Collector["Central collector: token validation, privacy filter"]
     Collector --> Store["Approved observability storage"]
-    Store --> Query["Authorized query API"]
-    Query --> View["Aggregate analytics"]
+    Store --> Query["Authorized queries"]
+    Query --> View["Aggregate analytics (not started)"]
 ```
 
-The local helper is a proposed component, not an existing Copilot feature. It becomes a prerequisite when native export cannot satisfy pre-export filtering or credential-lifecycle requirements. A successful laboratory test of direct export does not establish that every runtime can use the same configuration.
+The forwarder is the same OpenTelemetry Collector as the central service, running with the [forwarder profile](../collector/config/forwarder.yaml) as the participant. It exists because Copilot's native export can neither authenticate itself with renewable credentials nor filter its own metadata. A successful test of one runtime does not establish that every runtime can use the same configuration.
 
-## Client and local helper
+## Client and forwarder
 
-The first candidate client is a supported Windows VS Code instance using the Local harness. Agent Host, terminal CLI, remote extension hosts, and other operating systems qualify independently. Record exact versions and tested signals.
+The first supported client is Windows VS Code using the Local harness (`github.copilot.chat.otel.*` settings). Agent Host, terminal CLI, remote extension hosts, and other operating systems qualify independently. Record exact versions and tested signals.
 
-The user-run setup package should configure a dedicated user-owned editor instance, preserve unrelated settings, and offer status, disable, and restore operations. Static organization/cohort tags are configuration labels, not authenticated identity or active-project context.
+[setup-client.ps1](../scripts/setup-client.ps1) adds a marked block to the participant's VS Code user settings, preserves everything else, and offers install, start, stop, status, and uninstall ([client setup](client-setup.md)). Cohort and rollout labels travel in the `github.copilot.chat.otel.resourceAttributes` setting. They are configuration labels, not authenticated identity or active-project context.
 
-If required, a local helper should:
+The forwarder:
 
-- Bind only to its approved loopback interface and protect against unintended local senders.
-- Apply the approved field/value allow-list before off-device transmission.
-- Acquire, protect, renew, and revoke outbound credentials through an approved identity flow.
-- Keep credentials out of the editor environment, tool subprocesses, logs, and configuration examples.
-- Bound buffering and retry lifetimes, with no raw telemetry persistence.
-- Fail visibly without blocking ordinary development work.
+- Binds only to `127.0.0.1`, on a non-default port so other local OTLP senders do not reach it by accident.
+- Applies the shared allow-list and value validation before anything leaves the device.
+- Removes any client-supplied organization label; the central collector assigns it.
+- Obtains Entra ID tokens through the participant's Azure CLI sign-in and renews them automatically. Tokens stay inside the forwarder process, out of the editor's settings and environment, tool subprocesses, and logs.
+- Has a fixed memory budget, in-memory retry queues only, and no raw telemetry persistence.
+- Fails without blocking development work: if it is down, Copilot's export fails in the background.
 
-Loopback is not proof of process identity. Threat-model other processes running under the same user and prevent the helper from becoming an unrestricted authenticated proxy.
+Loopback is not proof of process identity. Another process running as the same user can send telemetry through the forwarder, and it will carry the participant's token. The privacy pipeline still applies, so this can add bogus records but not extra fields. Treat pilot data accordingly.
 
 ## Ingestion protocol
 
-Use OTLP over HTTP, initially with a tested protobuf configuration. The reference collector serves the standard signal paths at its root, so clients are configured with the base URL only (illustratively `https://telemetry.example.org`):
+Use OTLP (the OpenTelemetry protocol) over HTTP. Copilot sends JSON by default and the forwarder sends protobuf; the receiver accepts both. The reference collector serves the standard signal paths at its root, so clients are configured with the base URL only (illustratively `https://telemetry.example.org`):
 
 - `/v1/traces`
 - `/v1/metrics`
@@ -54,17 +52,17 @@ Ingress must enforce authentication and authorization, TLS, request/decompressio
 
 An endpoint URL alone provides no client credential. Copilot does not automatically attach a collector-specific token or a browser session. Enabling identity capture adds telemetry attributes; it does not authenticate the connection.
 
-| Option | Capability | Work still required |
+| Option | Capability | Assessment |
 |---|---|---|
-| Native explicit headers | The documented exporter supports `OTEL_EXPORTER_OTLP_HEADERS` | Safe provisioning, expiry/renewal, runtime support, and subprocess-secret exposure checks |
-| Local authenticated helper | A separate process can own upload authentication and filtering | Implementation, supported enrollment, credential protection/renewal, local isolation, and packaging |
+| Native explicit headers | Copilot supports a `github.copilot.chat.otel.headers` setting and `OTEL_EXPORTER_OTLP_HEADERS` | A static token expires within about an hour, and settings files and environment variables are readable by other local tools. Not used. |
+| Local authenticated forwarder | A separate process owns upload authentication and filtering | **Implemented for the pilot.** Tokens come from the participant's Azure CLI sign-in. A production release could replace Azure CLI with a dedicated public client and broker sign-in. |
 | Network restriction alone | Limits where connections can originate | Does not establish individual sender identity and does not satisfy the authenticated-ingestion requirement |
 
 Supplying a bearer header does not implement OAuth or token refresh. A token obtained once at startup eventually expires. Do not reuse a model-provider token for a different audience or distribute one long-lived secret to every participant.
 
 For an OAuth/OIDC design, validate signature, issuer, intended audience, lifetime, and authorized scopes/roles. Bind allowed organization/storage scope from a server-controlled enrollment mapping, not a request attribute. A valid credential authenticates an uploader, not the truth of its telemetry.
 
-Copilot's documented managed-header behavior differs between Chat and Agent Host. Verify the selected mechanism for each runtime. Managed settings or a setup script do not, by themselves, solve authentication.
+Copilot's documented managed-header behavior differs between Chat and Agent Host. Verify the selected mechanism for each runtime. A setup script or managed settings do not, by themselves, solve authentication; the forwarder does.
 
 ## Processing pipeline
 
@@ -77,9 +75,11 @@ Use a version-pinned, approved OpenTelemetry Collector distribution and supporte
 5. Batch and enqueue only sanitized records.
 6. Export through the selected backend adapter with bounded retries.
 
-The reference configuration implements steps 2 to 5 in [collector/config/base.yaml](../collector/config/base.yaml), and [scripts/verify.ps1](../scripts/verify.ps1) checks them with canary values. Its processors fail closed: a processing error drops the batch rather than forwarding unfiltered data.
+The reference configuration implements steps 1 to 5. The `azure` profile validates Entra ID tokens (step 1), and [collector/config/base.yaml](../collector/config/base.yaml) implements steps 2 to 5 for every profile: it drops unapproved spans, metrics, and log events, keeps only allow-listed attributes, replaces string values that are not identifier-like with `redacted`, removes span events, replaces span names with the operation name, clears status messages and log bodies, and overwrites the organization label. [scripts/verify.ps1](../scripts/verify.ps1) checks this with canary values. The processors fail closed: a processing error drops the batch rather than forwarding unfiltered data.
 
-Source-side filtering and server filtering have different guarantees: server filtering protects retained data, while only source-side controls can prevent prohibited fields from leaving the device.
+The pipeline does not yet clear span links or metric exemplars, and it does not validate values inside arrays such as `gen_ai.response.finish_reasons`. Check for them before qualifying a client that emits them.
+
+Source-side filtering and server filtering have different guarantees: server filtering protects retained data, while only source-side controls can prevent prohibited fields from leaving the device. The reference implementation runs the same pipeline in both places.
 
 The Collector is a processing service, not the long-term database. Do not archive unrestricted raw payloads for hypothetical future analysis. Disable payload debugging in ingress, authentication components, and the collector.
 
