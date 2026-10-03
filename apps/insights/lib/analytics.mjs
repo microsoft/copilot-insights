@@ -43,6 +43,7 @@ function breakdown(spans, field) {
 }
 
 export function composeInsights(input, { source = 'local', days = 7, now = Date.now() } = {}) {
+  const organizationId = input.organizationId ?? 'local-dev';
   const today = Math.floor(now / DAY) * DAY;
   const from = today - (days - 1) * DAY;
   const eligible = input.spans.filter((span) => span.timestamp <= now);
@@ -55,7 +56,26 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
   const unknown = calls.filter((span) => span.outcome === 'unknown');
   const missingTokens = calls.filter((span) => span.inputTokens === null || span.outputTokens === null);
   const slow = calls.filter((span) => span.durationMs !== null && span.durationMs > 5000);
-  const snapshotId = fingerprint([source, days, today, spans, latestTimestamp]);
+  const snapshotId = fingerprint([organizationId, source, days, today, spans, latestTimestamp]);
+  const spanKeys = new Set(spans.map((span) => `${span.traceId}:${span.spanId}`));
+  const traceIds = new Set(spans.map((span) => span.traceId));
+  const conversationIds = new Set(spans.filter((span) => span.conversationId).map((span) => span.conversationId));
+  const sessionConversations = new Set(spans.filter((span) => span.sessionId && span.conversationId)
+    .map((span) => JSON.stringify([span.sessionId, span.conversationId])));
+  const feedback = (input.feedback ?? []).filter((item) => item.timestamp >= from && item.timestamp <= now);
+  const matchedFeedback = feedback.filter((item) => item.traceId
+    ? item.spanId ? spanKeys.has(`${item.traceId}:${item.spanId}`) : traceIds.has(item.traceId)
+    : item.conversationId && (item.sessionId
+      ? sessionConversations.has(JSON.stringify([item.sessionId, item.conversationId]))
+      : conversationIds.has(item.conversationId)));
+  const traceGroups = new Map();
+  for (const span of spans) {
+    const group = traceGroups.get(span.traceId) ?? { traceId: span.traceId, spans: 0, linkedChildren: 0, latestTimestamp: span.timestamp };
+    group.spans++;
+    if (span.parentSpanId && spanKeys.has(`${span.traceId}:${span.parentSpanId}`)) group.linkedChildren++;
+    group.latestTimestamp = Math.max(group.latestTimestamp, span.timestamp);
+    traceGroups.set(span.traceId, group);
+  }
   const findings = [];
   const addFinding = (kind, details, evidence) => {
     findings.push({
@@ -126,6 +146,7 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
   return {
     schemaVersion: 1,
     source,
+    organizationId,
     generatedAt: new Date(now).toISOString(),
     snapshotId,
     window: { days, from: new Date(from).toISOString(), to: new Date(now).toISOString() },
@@ -142,6 +163,19 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     models: breakdown(calls, 'model'),
     tools: breakdown(tools, 'tool'),
     findings,
+    correlation: {
+      traces: traceGroups.size,
+      linkedChildSpans: [...traceGroups.values()].reduce((total, group) => total + group.linkedChildren, 0),
+      spansWithParent: spans.filter((span) => span.parentSpanId).length,
+      conversations: new Set(spans.map((span) => span.conversationId).filter(Boolean)).size,
+      sessions: new Set(spans.map((span) => span.sessionId).filter(Boolean)).size,
+      spansWithConversationId: spans.filter((span) => span.conversationId).length,
+      spansWithSessionId: spans.filter((span) => span.sessionId).length,
+      toolCallsWithId: tools.filter((span) => span.toolCallId).length,
+      feedbackLogs: feedback.length,
+      matchedFeedbackLogs: matchedFeedback.length,
+      recentTraces: [...traceGroups.values()].sort((left, right) => right.latestTimestamp - left.latestTimestamp).slice(0, 5),
+    },
     quality: {
       ...input.quality,
       acceptedSpans: spans.length,

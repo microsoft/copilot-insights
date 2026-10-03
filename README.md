@@ -2,7 +2,7 @@
 
 Self-hosted observability for GitHub Copilot agents in VS Code: inspect tool activity, model usage, token counts, and latency using OpenTelemetry.
 
-**Early preview for evaluation.** Synthetic collector tests and one native Windows Local Copilot capture/restore test pass; fleet, privacy, and end-to-end Azure qualification remain open. There is no public hosted offering or production-ready release. See [Project status](#project-status).
+**Early preview for evaluation.** Synthetic collector tests and native Windows Local Copilot capture/restore checks pass; fleet, privacy, and end-to-end Azure qualification remain open. There is no public hosted offering or production-ready release. See [Project status](#project-status).
 
 ## Start here
 
@@ -21,122 +21,87 @@ The goal is to understand usage and reliability, not collect conversations or sc
 
 ## Try it on your machine
 
-Start with synthetic data. You need Docker running with Linux containers and Compose, plus PowerShell 7.2 or later (`pwsh`). You do not need Copilot, Azure, or to change editor settings for this demo.
+The walkthrough has **two separate organizations**: a fictional **Demo organization** that works immediately, and **My VS Code organization**, which receives your local editor's telemetry. No Azure account is needed. The selector changes what you view; it does not route telemetry or create a tenant.
 
-Follow the order **build/deploy → observe a baseline → send a dummy fixture → observe the difference → optionally perform real VS Code/Copilot actions → observe again**. The fixture command sends OTLP directly to the collector; it does **not** create events inside a Copilot process or prove real-client export works.
+**Prerequisites:** Docker running with Linux containers and Compose. Use PowerShell 7.2+ for the client scripts. A signed-in VS Code with GitHub Copilot is needed only for step 2. No host Node.js installation is required.
 
-1. **Get the repository.** In PowerShell 7, run:
+If you have not cloned the repository, run `git clone https://github.com/microsoft/copilot-insights.git`, then `cd copilot-insights`. Run the following commands from that folder.
 
-   ```powershell
-   git clone https://github.com/microsoft/copilot-insights.git
-   cd copilot-insights
-   ```
+### 1. Set up the service and view the demo organization
 
-   Already have it? Open PowerShell 7 in that folder instead. Without Git, use GitHub's **Code > Download ZIP**, extract it, and open the extracted folder. Run all following commands from the repository folder.
+```powershell
+docker compose -f deploy/local/compose.yaml up --build --detach
+docker compose -f deploy/local/compose.yaml ps
+```
 
-2. **Build and deploy first. Do not send telemetry yet.**
+On Linux, first create the local output directory in Bash with `mkdir -p deploy/local/.data && chmod 777 deploy/local/.data`. That shared-writable directory is only suitable for this disposable evaluation, not a production data store.
 
-   On Linux only, first run `mkdir -p deploy/local/.data && chmod 777 deploy/local/.data` in Bash. This lets the container write its output; the directory is shared-writable, so use it only for this synthetic demo.
+**Expected:** three running services: collector, Aspire dashboard, and insights portal. Allow about 30 seconds for the portal health check.
 
-   ```powershell
-   docker compose -f deploy/local/compose.yaml up --build --detach
-   docker compose -f deploy/local/compose.yaml ps
-   ```
+Open **<http://127.0.0.1:3000/>**. **Demo organization** is selected by default, with sample activity, model/tool breakdowns, and findings ready for human review. Open a finding, expand **IDs & trace**, and try a review decision. The banner clearly labels the organization as fictional; these examples are generated locally, not emitted by Copilot or sent through the collector.
 
-   **Expected result:** the collector, Aspire dashboard, and insights service are running; the insights service becomes healthy. Building or starting the stack does not generate Copilot activity.
+The **Organization** dropdown contains:
 
-3. **Observe the portal before the test:** <http://127.0.0.1:3000/?source=local&days=7&view=overview>.
+| Organization | Data | What to expect |
+|---|---|---|
+| Demo organization (`synthetic-demo`) | Independent fictional generator | Populated immediately; never receives editor activity |
+| My VS Code organization (`local-vscode`) | Sanitized output from your local collector | Empty on a fresh installation; changes after native Copilot activity |
 
-   Select **Local collector**, keep **7 days** selected, and click **Refresh data**. Note the agent runs, model calls, tool executions, observed tokens, and reported errors. A new installation has no collected activity; an existing installation can have earlier samples. Compare against your baseline rather than assuming zero.
+Switch to **My VS Code organization** and record the baseline before continuing. The new output file is `deploy/local/.data/vscode-telemetry.jsonl`; older evaluation captures are not imported. Existing data in the new file is retained across restarts. An empty organization never silently falls back to the demo.
 
-   Do **not** select **Synthetic demo** for this comparison. That source is an independent fictional dataset, not a view of the collector, and does not change when you use VS Code or send fixtures.
+<a id="optional-connect-vs-code"></a>
 
-4. **Send a dummy telemetry fixture and verify the pipeline.**
+### 2. Enable logging and do a small VS Code/Copilot task
 
-   ```powershell
-   ./scripts/verify.ps1 -TimeoutSeconds 60
-   ```
+Use a disposable folder, not a private repository. Do not change managed policies or telemetry opt-outs. The temporary setup saves your original settings privately and restores them exactly after the test. Do not edit user settings while the test is active.
 
-   **Expected result:** the script identifies itself as a synthetic emitter, prints `PASS` checks, and ends with `Verification passed`. It uses documented `invoke_agent`, `chat`, and `execute_tool` spans, GenAI duration/token histograms, tool/feedback counters, and feedback log events. It also injects deliberate secret canaries and rejected-record controls to test filtering; those controls are not claims about normal Copilot output. See [signal compatibility and provenance](docs/data-contract.md#signal-compatibility-and-fixture-provenance).
+```powershell
+./scripts/setup-client.ps1 Install -Local -Temporary
+./scripts/setup-client.ps1 Status
 
-5. **Refresh the portal and compare with step 3.**
+$sampleFolder = Join-Path ([IO.Path]::GetTempPath()) "copilot-insights-sample-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+New-Item -ItemType Directory -Path $sampleFolder | Out-Null
+'Hello from a disposable Copilot Insights example.' | Set-Content (Join-Path $sampleFolder 'hello.txt')
+code --new-window $sampleFolder
+```
 
-   Keep the same **Local collector** source and time window. After one successful fixture run, with no other new activity, expect these differences:
+This configures OTLP/HTTP to `http://localhost:4318`, with **content and identity capture off**. It does not disable existing organizational restrictions. Trust only this sample folder if prompted. If reusing an already-open test window, run **Developer: Reload Window** in that window only.
 
-   | Portal measure | Change from your baseline |
-   |---|---|
-   | Agent runs | +1 |
-   | Model calls | +1 |
-   | Tool executions | +1 |
-   | Observed tokens | +1,380: 1,200 input and 180 output |
-   | Reported model errors | +1, deliberately injected |
+The collector assigns `copilot_insights.organization.id=local-vscode`. Do not add an organization ID to the VS Code settings: client-supplied organization values are overwritten, and choosing a different portal organization cannot move or relabel events.
 
-   The error signal is intentional, not a real Copilot failure. Inspect **Models & tools** for `example-model` / `readFile`, and **Review queue** for the error evidence. Latency percentiles and error percentages depend on the previous data and need not increase. The portal does not double-count parent-agent tokens or independent metric samples.
+In the sample window:
 
-   **Raw diagnostics:** open <http://127.0.0.1:18888/traces> to inspect the correlated trace. Span names are normalized by the privacy filter. In Aspire Metrics, inspect the histogram/counter instruments; Structured Logs contains the permitted feedback event with its body cleared. These are synthetic fixtures even though they traveled through the real collector. The [analytics guide](docs/analytics.md) explains the views and counting rules.
+1. Run `Write-Output 'plain-terminal-check'` in its terminal. An ordinary command or file edit by itself is **not** a Copilot agent event.
+2. Open Copilot Chat, choose the **Local** harness and **Agent** mode, then submit:
 
-If verification fails, check that Docker is running and inspect `docker compose -f deploy/local/compose.yaml logs collector`. Do not enable real-client export to troubleshoot a failed synthetic test.
+   > Read hello.txt using a file tool, then run Write-Output 'copilot-insights-native-check' using the terminal tool. Do not modify files, access the network, or inspect any other folder. Report the two results.
 
-### Optional: connect VS Code
+3. Review any tool approval request and allow only that harmless sample operation. When the response finishes, mark it **Helpful** to exercise a feedback event.
 
-This is a **separate, opt-in real-client test**, not something the fixture command performs. On Windows, you need VS Code with Copilot access and permission to enable metadata export. Use only a disposable project and harmless prompts; keep internal repositories, credentials, and unrelated work closed.
+A terminal-only CLI, an Agent Host session, demo data, and `verify.ps1` are not substitutes for this native VS Code/Copilot exercise. Some client versions emit additional background model/tool spans; do not expect every task to produce exactly one model call.
 
-1. **Enable temporary local export explicitly**, from this repository in PowerShell 7:
+### 3. View your organization's new telemetry, then restore settings
 
-   ```powershell
-   ./scripts/setup-client.ps1 Install -Local -Temporary
-   ./scripts/setup-client.ps1 Status
-   ```
+Return to the portal, select **My VS Code organization**, keep the same time window, and select **Refresh data**. Spans should arrive within seconds; allow up to a minute for metrics and feedback export.
 
-   You can add `-WhatIf` to preview it. This temporarily changes your **normal VS Code user settings**, not an isolated profile, and affects windows using those settings. It sets OTLP/HTTP to the deployed loopback collector, with content and identity capture off. Existing user OTel preferences are saved for exact restoration; an installed client, disabled VS Code telemetry, or conflicting policy/environment routing stops the test. Do not bypass those restrictions. `Status` checks configuration/reachability, not actual native export.
+- **Overview / Models & tools:** compare agent runs, model calls, executed tools, and observed tokens with the baseline. Missing outcomes remain unknown, not successful.
+- **Data quality:** inspect trace IDs, linked child spans, conversation IDs, window/session IDs, and correlated feedback. Trace links open Aspire at `http://127.0.0.1:18888`. These IDs correlate operations, not people.
+- **Review queue:** inspect the rule and sanitized evidence; decisions are bound to the organization and exact evidence snapshot.
+- Switch back to **Demo organization**: native activity must not appear there, and review decisions must remain separate. Demo totals can vary with the UTC time window, not because of native ingestion.
 
-   **Do not edit user settings during the test.** A private full-settings snapshot is kept under `%LOCALAPPDATA%\CopilotInsights` until restoration. Do not share it or place a custom `-InstallRoot` in source control. Prepare to run `restore-client.ps1` in step 7 even if an earlier step fails.
+Always restore your editor settings after the exercise, including when collection fails:
 
-2. **Open a disposable folder.** The following creates a fictional text file outside the repository:
+```powershell
+./scripts/restore-client.ps1
+```
 
-   ```powershell
-   $samplePath = Join-Path ([IO.Path]::GetTempPath()) ('copilot-insights-sample-' + [Guid]::NewGuid().ToString('N'))
-   New-Item -ItemType Directory -Path $samplePath | Out-Null
-   Set-Content -LiteralPath (Join-Path $samplePath 'hello.txt') -Value 'Hello from a disposable telemetry test.'
-   Write-Output $samplePath
-   code --new-window $samplePath
-   ```
+**Expected:** the original settings are verified byte for byte and the temporary snapshot is deleted. Close or reload only the disposable test window to unload its temporary exporter. Restoration returns to the previous configuration, which may itself have telemetry enabled. If settings were edited concurrently, the script refuses to overwrite them; use the [local recovery guidance](docs/client-setup.md#local-development-and-administrator-diagnostics).
 
-   If `code` is not on PATH, use **File > Open Folder** to open the displayed `$samplePath`. Save work and run **Developer: Reload Window** in the test window. Use a **Local Copilot Chat** session in **Agent** mode, not Agent Host, a CLI terminal session, a cloud/background agent, or a remote window; those paths need separate qualification.
+If you trusted the sample folder, use **Workspaces: Manage Workspace Trust > Don't Trust** in that sample window before closing it. The [validated organization walkthrough](docs/local-validation.md#organization-walkthrough) records the empty baseline, actual native task, correlation, portal change, and exact settings restoration.
 
-3. **Take another portal baseline, then try an ordinary terminal command.** Refresh **Local collector** with the same time window. In the sample window's PowerShell terminal, run:
+**No new activity?** Check the selected organization, the test window's Local harness and effective settings, `Status`, and collector health (`http://127.0.0.1:13133/`). Check that the window loaded the new settings. Ordinary typing/terminal activity is not a Copilot invocation. Inspect [correlation and collection limits](docs/analytics.md#correlation-ids) before assuming events are missing.
 
-   ```powershell
-   Write-Output 'copilot-insights-manual-control'
-   ```
-
-   This command alone is not a Copilot operation and should not add agent/model/tool spans. Opening a file or typing in the editor is not an LLM request either. Background exports from earlier activity can still arrive, so let previous work finish before comparing.
-
-4. **Ask Copilot to perform the dummy operation.** Submit this prompt in the Local Agent chat:
-
-   > Read hello.txt using a file tool. Then run `Write-Output 'copilot-insights-agent-check'` in the PowerShell terminal. Do not modify files, invoke subagents, read other files, or use network tools. Summarize what you did.
-
-   Review any tool approval and approve only the harmless action you requested. Here the **Copilot process**, rather than a fixture script, should emit agent, model-call, and tool-execution spans. The number of calls and reported tokens depends on the actual agent execution; do not expect the fixture's exact counts.
-
-5. **Optionally exercise edit and response feedback.** Ask Copilot to change only `hello.txt` to `Hello from the edited telemetry sample.` Review and accept or reject the proposed edit, and optionally use the chat response's thumbs-up/down control. Where supported by that client, these produce edit/feedback metrics and events. Inspect them in Aspire Metrics/Structured Logs. The portal currently aggregates spans, not feedback scores; its own review decisions are also separate from Copilot feedback.
-
-6. **Observe the portal again and verify native provenance.** After the agent finishes, allow time for export/batching (up to about a minute), then click **Refresh data** with the same source and time window. Compare model/tool calls, observed tokens, the current day's activity, and available evidence with the second baseline. New error/review signals are not guaranteed for a successful task; missing measurements remain unknown.
-
-   In Aspire Traces, find the new `copilot-chat` trace from the test time, with the installed extension's `service.version` and correlated `invoke_agent`, `chat`, and `execute_tool` spans. The fixture version is `0.0.0-verification`; seeing only that version or `example-model` does **not** verify a real client. Keep collected metadata local; do not commit raw telemetry or diagnostic exports.
-
-   If nothing changes, check **Local collector** versus **Synthetic demo**, refresh the page, check `Status` and collector health, verify that the test window was reloaded, and confirm the Local harness and its effective settings. A successful dummy fixture or an enabled setting alone is not native-client validation. See [client troubleshooting](docs/client-setup.md#troubleshooting) and [validation limits](docs/local-validation.md#not-qualified-by-this-run).
-
-7. **Restore the original settings, including after a failed test.**
-
-   ```powershell
-   ./scripts/restore-client.ps1
-   ```
-
-   **Expected result:** original settings verified byte for byte and the temporary snapshot deleted. Close or reload only the test window to discard its temporary exporter configuration; do not interrupt other editor sessions. Restoration returns to your previous configuration, which may itself have telemetry enabled. If settings changed during the test, restoration refuses to overwrite them; follow [local recovery guidance](docs/client-setup.md#local-development-and-administrator-diagnostics).
-
-**Verified example:** on October 3, 2026 UTC (October 2, 2026 PDT), VS Code 1.140.0 / Copilot Chat 0.68.0 emitted native agent/model/file/terminal spans, nine metric families, and a response-feedback event. Portal totals changed from 5 to 6 agent runs, 5 to 15 model calls, and 6,900 to 119,925 observed tokens; the native extension also made auxiliary model/tool calls. Settings were restored exactly. See the [scoped evidence and limits](docs/local-validation.md#native-client-emission-and-restoration), not a fixed expected count for your own task.
-
-After restarting your machine, make sure Docker and the demo containers are running before another test. Local mode does not use the setup script's `Start` or `Stop` actions.
+For maintainer-only synthetic collector tests, see [contributing](CONTRIBUTING.md#implementation-checks). `verify.ps1` directly posts tagged OTLP fixtures and must not be described as native client emission or run to manufacture a successful native walkthrough.
 
 ### Stop the demo
 
@@ -144,9 +109,7 @@ After restarting your machine, make sure Docker and the demo containers are runn
 docker compose -f deploy/local/compose.yaml down
 ```
 
-If you used the temporary native test, run `./scripts/restore-client.ps1` and close or reload its window. For an older non-temporary marked-block installation, use `./scripts/setup-client.ps1 Uninstall` instead. Stopping containers leaves local output in `deploy/local/.data`; remove that generated directory when you no longer need it. You can also delete the disposable sample folder; review decisions remain in the separate Docker volume.
-
-The local demo has no authentication. Keep its ports bound to `127.0.0.1`; do not expose it to other machines.
+This stops the local services but keeps telemetry and the review volume. It does not restore VS Code settings: run the restore command first. Do not add `--volumes` unless you intend to delete saved review decisions.
 
 ## Deploy to Azure
 
@@ -154,7 +117,7 @@ The local demo has no authentication. Keep its ports bound to `127.0.0.1`; do no
 
 This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identity, and Azure Monitor storage; then an administrator builds/pushes the collector image and redeploys with `deployCollector = true`. The local human-review portal is **not** deployed or connected to Azure by this template. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
 
-**Validation status:** an isolated private Azure collector is running with the intended ingestion identity and custom-certificate binding. Authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights are **not yet verified**; the validation runner blocked the data-plane probes. Read the [evidence and remaining gates](docs/azure-validation.md) before treating this as an end-to-end deployment.
+**Validation status:** the isolated Azure validation resources and their active ingestion registration were **removed and verified absent on October 3, 2026**, at the user's request. The collector was healthy before cleanup, but authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights were **not verified**. Read the [historical evidence, cleanup, and remaining gates](docs/azure-validation.md) before treating the template as an end-to-end deployment.
 
 The button reads the published ARM JSON on `main`, not your checkout. **Publication gate:** the new template URL returned HTTP 404 during the October 3, 2026 UTC check. Until this change is published, use the checked-out template via Azure CLI, upload it in the portal, or publish an [Azure-hosted Template Spec deployment link](docs/infrastructure.md#azure-hosted-deployment-link); do not treat the GitHub badge as a validated live deployment. An RBAC-protected Template Spec copy passed Azure provider validation in the isolated lab. See [scoped cloud results](docs/azure-validation.md).
 
@@ -183,12 +146,12 @@ The local demo replaces the cloud destination with a dashboard and output file. 
 | Area | State |
 |---|---|
 | Collector filtering | Synthetic tests pass; privacy qualification remains open |
-| Docker demo and dashboard | Verified locally on Windows/WSL2 with synthetic and one native Local Copilot exercise; see the [validation report](docs/local-validation.md) and [CI workflow](.github/workflows/ci.yml) |
+| Docker demo and dashboard | Verified locally on Windows/WSL2, including separate demo/native organizations, native trace and feedback correlation, and exact settings restoration; see the [validation report](docs/local-validation.md) and [CI workflow](.github/workflows/ci.yml) |
 | Local analytics and human review | Implemented: collector-file aggregates, isolated fictional demo, evidence views, coverage, and persistent local review decisions; see [analytics](docs/analytics.md) |
 | Windows setup and diagnostic forwarder | Local setup and synthetic telemetry tested; target-tenant token issuance checked separately. Forwarder-to-Azure delivery is not yet verified; Azure CLI and manual startup are still required |
 | Temporary local setup and restore | Native test uses reversible settings; rollback tests preserve bytes and refuse concurrent edits |
 | Intune organization deployment | Production plan documented; signed package, managed lifecycle, and supported authentication still required |
-| Private Azure deployment and storage export | Private collector running; target-tenant token issuance, source image layer, and certificate binding checked. Cloud data-plane and stored-data verification remain blocked. See [Azure validation](docs/azure-validation.md) |
+| Private Azure deployment and storage export | Validation deployment and active ingestion identity removed. Historical control-plane checks passed; cloud data-plane and stored-data verification did not complete. See [Azure validation and cleanup](docs/azure-validation.md) |
 | Native Local Copilot | Windows VS Code 1.140.0 / Copilot Chat 0.68.0 sample verified; wider version/runtime qualification remains open |
 | Shared/authenticated team analytics, automatic client startup, macOS/Linux forwarders | Not implemented |
 

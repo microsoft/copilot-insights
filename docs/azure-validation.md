@@ -1,14 +1,16 @@
 # Azure validation
 
-Run date: **October 3, 2026 UTC (October 2, 2026 PDT)**. This record intentionally omits subscription/tenant IDs, resource names, private endpoint addresses, account identifiers, certificate fingerprints, keys, and private deployment links.
+Initial run: **October 3, 2026 UTC (October 2, 2026 PDT)**. Cleanup verified: **October 3, 2026 UTC/PDT**. This record intentionally omits subscription/tenant IDs, resource names, private endpoint addresses, account identifiers, certificate fingerprints, keys, and private deployment links.
 
 ## Result
 
-**The isolated private collector is deployed and healthy. End-to-end authenticated cloud telemetry validation is blocked, not passed.** The supplied ownership reference was accepted and the ingestion API was registered in the intended tenant with assignment-required token issuance. The collector was then activated with the real application audience. The validation runner blocked subsequent diagnostic commands before execution, including a credential-free TLS probe. This is not an observed Azure authentication rejection and must not be reported as an ingestion test result. No cloud analytics portal is running from this template.
+**The previous Azure validation deployment has been removed. End-to-end authenticated cloud telemetry validation was not completed and is not a passing result.** Before cleanup, the supplied ownership reference was accepted and the ingestion API was registered in the intended tenant with assignment-required token issuance. The collector was activated with the real application audience and was healthy. The validation runner blocked subsequent diagnostic commands before execution, including a credential-free TLS probe. This was not an observed Azure authentication rejection and must not be reported as an ingestion test result. This template did not deploy a cloud analytics portal.
 
-The [native local-client verification](local-validation.md#native-client-emission-and-restoration) remains valid and separate. Its VS Code settings were still byte-for-byte restored after this work. No new native-client exercise, replay of the local capture to Azure, or real-work telemetry upload was performed.
+The [native local-client verification](local-validation.md#native-client-emission-and-restoration) and later [organization walkthrough](local-validation.md#organization-walkthrough) remain separate local evidence. Their VS Code settings were restored byte for byte. Neither exercise replayed local captures to Azure or uploaded real-work telemetry.
 
 ## Verified
+
+This table records the historical deployment checks, not currently running resources. See [cleanup](#retention-and-cleanup) for the verified current state.
 
 | Check | Observed result |
 |---|---|
@@ -54,7 +56,7 @@ An empty workspace is not proof of filtering, a healthy collector is not proof o
 
 ## Resume safely
 
-1. Reuse the recorded target-tenant registration and deployed collector; do not create duplicate applications. Reconfirm operator assignment and certificate validity. Keep real deployment values private.
+1. A future cloud test requires a fresh isolated deployment and approved ingestion identity: the previous resource group, Template Spec, and active registration are deleted. Follow the [deployment guide](infrastructure.md#deploy), reconfirm operator assignment and certificate validity, and keep real deployment values private. Do not assume a recorded endpoint or private deployment link still exists.
 2. Obtain a permitted private diagnostic execution path. Do not work around execution restrictions, expose ingestion publicly, export user credentials into another workload, or disable bearer-token/TLS checks to make a test pass.
 3. Verify actual HTTPS/SNI and trust, run the synthetic [remote verification](infrastructure.md#verify) with explicit `-TenantId`, and prove missing/invalid/wrong-resource token rejection. Verify all three span operations, the retained metric families and feedback log, and zero stored canaries after ingestion delay.
 4. Compose insights from those actual stored cloud records and implement the missing Azure-backed portal/shared-review boundary. Do not relabel the local file or demo portal as an Azure data source. A separate native-client cloud exercise must use a disposable workspace and restore settings afterward.
@@ -62,8 +64,17 @@ An empty workspace is not proof of filtering, a healthy collector is not proof o
 
 ## Retention and cleanup
 
-The private collector, Azure infrastructure, target-tenant ingestion registration, and development certificate were **retained**, not automatically removed. Registry, collector, private endpoint, and other resources can incur charges while retained. Review/expiry tags are labels, not automatic deletion. Temporary publisher execution resources and their registry-push permissions are removed after publication; the failed build pool was deleted. Published image artifacts remain in the private registry. The private Template Spec is in the validation resource group, so deleting that group also removes its deployment link.
+At the user's request, cleanup was completed and verified on **October 3, 2026**:
+
+| Cleanup target | Verification |
+|---|---|
+| Recorded validation resource group | Azure reports that the group no longer exists, including its collector, registry/images, monitoring resources, network, uploaded certificate, and Template Spec |
+| Container Apps managed infrastructure group | Azure reports that the associated managed group no longer exists |
+| Recorded ingestion application and enterprise service principal | Explicit target-tenant Microsoft Graph lookups return HTTP 404 for both active objects |
+| Local VS Code settings | Exact original bytes restored; temporary settings snapshot removed |
+
+Only the recorded isolated deployment and its owned directory objects were removed. Directory deletion is not a claim of permanent purge of recoverable deleted objects. The deleted Template Spec's private deployment link is no longer usable; the public template source and deployment instructions remain in the repository. Review/expiry tags did not perform this cleanup automatically.
 
 Deployment metadata and validation evidence live outside the repository under the current user's `%LOCALAPPDATA%\CopilotInsights\AzureValidation` directory. Certificate/private-key material is in the helper's restricted certificate directory. Temporary plaintext secure-parameter files were removed after deployment/validation. Do not publish these private directories or raw cloud exports.
 
-For the local trust reversal, use [the certificate helper's `Untrust` and `Remove` commands](infrastructure.md#development-https-certificate). Deleting local trust does not remove the Azure binding or uploaded certificate. After confirming the isolated resource group is no longer needed, remove it through Azure using its recorded subscription and group name. The retained ingestion registration is a directory object, not a resource-group member, so its owner must retire it separately when appropriate. Do not delete unrelated registrations, client networks, or certificates.
+The separately requested local development certificate and its current-user trust were retained; removing cloud resources does not require removing that local lab setup. To reverse it separately, use [the certificate helper's `Untrust` and `Remove` commands](infrastructure.md#development-https-certificate). Do not delete unrelated registrations, client networks, or certificates.

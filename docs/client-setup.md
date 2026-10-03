@@ -60,7 +60,7 @@ The non-temporary diagnostic setup still supports `Install`, `Start`, `Stop`, `S
 | Authentication or HTTP `401` errors | Send the error code to support; identity owners verify enrollment, token lifecycle, issuer/audience and authorization |
 | VS Code telemetry is off, or policy/environment conflicts are reported | Leave restrictions in place; support checks effective values using Developer: Policy Diagnostics |
 | Connection or DNS errors | Use the approved network; service owners check private connectivity and DNS |
-| Local test has no new portal activity | Check Local collector, refresh, the test window's Local harness/reload, native service version, and collector health; do not substitute fixture success for native proof |
+| Local test has no new portal activity | Select My VS Code organization, refresh, and check the test window's Local harness/reload, native service version, and collector health; Demo organization never receives editor activity, and fixture success is not native proof |
 | Restore reports concurrent settings edits | Keep the private snapshot and reconcile edits locally; there is deliberately no force-overwrite option |
 
 Share reviewed error codes and non-sensitive status only, not access tokens, settings backups, raw telemetry, or full diagnostic logs.

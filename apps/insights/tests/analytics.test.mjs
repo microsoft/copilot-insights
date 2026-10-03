@@ -202,22 +202,23 @@ test('decisions persist atomically across store reloads and reject concurrent st
   assert.equal(restored.get(id).status, 'reviewed');
   assert.equal(restored.get(id).revision, 1);
   const saved = JSON.parse(await readFile(path, 'utf8'));
-  assert.deepEqual(Object.keys(saved.decisions[0]).sort(), ['id', 'revision', 'source', 'status', 'updatedAt']);
+  assert.equal(saved.version, 2);
+  assert.deepEqual(Object.keys(saved.decisions[0]).sort(), ['id', 'organizationId', 'revision', 'source', 'status', 'updatedAt']);
 });
 
 async function service(context, withData = true) {
   const directory = await temporary(context);
   const telemetryPath = join(directory, 'telemetry.jsonl');
   if (withData) await writeFile(telemetryPath, `${JSON.stringify(fixture())}\n`);
-  const server = await createApp({ telemetryPath, reviewPath: join(directory, 'reviews.json'), clock: () => NOW });
+  const server = await createApp({ telemetryPath, reviewPath: join(directory, 'reviews.json'), organizationId: 'local-dev', clock: () => NOW });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
   return { base: `http://127.0.0.1:${server.address().port}`, telemetryPath };
 }
 
-test('HTTP API defaults to local data, never silently falls back to demo, and sets privacy headers', async (context) => {
+test('an empty selected organization never falls back to demo and keeps privacy headers', async (context) => {
   const { base } = await service(context, false);
-  const response = await fetch(`${base}/api/insights`);
+  const response = await fetch(`${base}/api/insights?organization=local-dev`);
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-security-policy'), /connect-src 'self'/);
   assert.equal(response.headers.get('access-control-allow-origin'), null);
@@ -252,7 +253,7 @@ test('HTTP boundary rejects foreign hosts, origins, arbitrary files, and unsuppo
 
 test('review API requires same-origin token, validates enums, and detects stale evidence', async (context) => {
   const { base, telemetryPath } = await service(context);
-  const data = await (await fetch(`${base}/api/insights`)).json();
+  const data = await (await fetch(`${base}/api/insights?source=local`)).json();
   const body = { source: 'local', days: 7, findingId: data.findings[0].id, status: 'reviewed', expectedRevision: 0 };
   const headers = { 'Content-Type': 'application/json', Origin: base, 'X-Review-Token': data.reviewToken };
   const post = (payload, requestHeaders = headers) => fetch(`${base}/api/reviews`, { method: 'POST', headers: requestHeaders, body: JSON.stringify(payload) });
@@ -263,7 +264,7 @@ test('review API requires same-origin token, validates enums, and detects stale 
   assert.equal((await post({ ...body, source: 'demo' })).status, 409);
   assert.equal((await post(body)).status, 200);
   assert.equal((await post(body)).status, 409);
-  const refreshed = await (await fetch(`${base}/api/insights`)).json();
+  const refreshed = await (await fetch(`${base}/api/insights?source=local`)).json();
   assert.equal(refreshed.findings[0].review.status, 'reviewed');
   const changed = fixture();
   modelSpan(changed).endTimeUnixNano = nano(NOW);
@@ -274,7 +275,7 @@ test('review API requires same-origin token, validates enums, and detects stale 
 test('API failures do not reflect malformed file contents or local paths', async (context) => {
   const { base, telemetryPath } = await service(context);
   await writeFile(telemetryPath, 'PRIVATE-CANARY-malformed\n');
-  const response = await fetch(`${base}/api/insights`);
+  const response = await fetch(`${base}/api/insights?organization=local-dev`);
   assert.equal(response.status, 503);
   const text = await response.text();
   assert.ok(!text.includes('PRIVATE-CANARY'));
@@ -307,6 +308,174 @@ test('corrupt review state fails closed and failed writes do not mark findings a
   const store = new ReviewStore(join(path, 'reviews.json'));
   await assert.rejects(store.update('b'.repeat(24), 'local', 'reviewed', 0), { code: 'review-write-failed' });
   assert.equal(store.get('b'.repeat(24)).status, 'unreviewed');
+});
+
+test('organization catalog defaults to a fictional demo and keeps native data separate', async (context) => {
+  const { base, telemetryPath } = await service(context, false);
+  const catalog = await (await fetch(`${base}/api/organizations`)).json();
+  assert.equal(catalog.defaultOrganizationId, 'synthetic-demo');
+  assert.deepEqual(catalog.organizations.map((entry) => entry.id), ['synthetic-demo', 'local-dev']);
+  const demoBefore = await (await fetch(`${base}/api/insights`)).json();
+  assert.equal(demoBefore.organizationId, 'synthetic-demo');
+  assert.ok(demoBefore.summary.calls > 0);
+  const empty = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
+  assert.equal(empty.summary.calls, 0);
+  await writeFile(telemetryPath, `${JSON.stringify(fixture())}\n`);
+  const native = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
+  assert.equal(native.organizationId, 'local-dev');
+  assert.equal(native.organization.source, 'local');
+  assert.equal(native.summary.calls, 1);
+  const demoAfter = await (await fetch(`${base}/api/insights?organization=synthetic-demo`)).json();
+  assert.deepEqual(demoAfter.summary, demoBefore.summary);
+  assert.equal(demoAfter.snapshotId, demoBefore.snapshotId);
+});
+
+test('unknown, duplicate and contradictory organization selectors fail closed', async (context) => {
+  const { base } = await service(context);
+  for (const query of ['organization=foreign-org', 'organization=', 'organization=local-dev&organization=synthetic-demo', 'organization=local-dev&source=demo', 'organization=synthetic-demo&source=private']) {
+    const response = await fetch(`${base}/api/insights?${query}`);
+    assert.equal(response.status, 400, query);
+    assert.equal((await response.json()).summary, undefined);
+  }
+  assert.equal((await fetch(`${base}/api/organizations?organization=private`)).status, 400);
+  const legacy = await (await fetch(`${base}/api/insights?source=local`)).json();
+  assert.equal(legacy.organizationId, 'local-dev');
+});
+
+test('foreign organization records do not affect totals, diagnostics or evidence fingerprints', () => {
+  const other = fixture();
+  other.resourceSpans[0].resource = { attributes: [attr('service.name', 'copilot-chat'), attr('copilot_insights.organization.id', 'foreign-org')] };
+  other.resourceMetrics = [{ resource: other.resourceSpans[0].resource, scopeMetrics: [{ metrics: [{}] }] }];
+  other.resourceLogs = [{ resource: other.resourceSpans[0].resource, scopeLogs: [{ logRecords: [{}] }] }];
+  const baseline = insights([fixture()]);
+  assert.deepEqual(insights([fixture(), other]), baseline);
+  const foreign = composeInsights({ ...normalizeRecords([other], 'foreign-org'), missing: false, pendingRecord: false }, { now: NOW });
+  assert.notEqual(foreign.snapshotId, baseline.snapshotId);
+  assert.notEqual(foreign.findings[0].id, baseline.findings[0].id);
+});
+
+test('reviews require the selected organization and cannot transfer to the demo', async (context) => {
+  const { base } = await service(context);
+  const data = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
+  const body = { organizationId: 'local-dev', days: 7, findingId: data.findings[0].id, status: 'reviewed', expectedRevision: 0 };
+  const headers = { 'Content-Type': 'application/json', Origin: base, 'X-Review-Token': data.reviewToken };
+  const post = (payload) => fetch(`${base}/api/reviews`, { method: 'POST', headers, body: JSON.stringify(payload) });
+  assert.equal((await post({ ...body, organizationId: 'foreign-org' })).status, 400);
+  assert.equal((await post({ ...body, organizationId: 'synthetic-demo' })).status, 409);
+  assert.equal((await post({ ...body, source: 'demo' })).status, 400);
+  assert.equal((await post(body)).status, 200);
+  const native = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
+  assert.equal(native.findings[0].review.status, 'reviewed');
+  const demo = await (await fetch(`${base}/api/insights?organization=synthetic-demo`)).json();
+  assert.ok(demo.findings.every((finding) => finding.review.status === 'unreviewed'));
+});
+
+test('legacy review state is preserved but does not silently acquire an organization', async (context) => {
+  const directory = await temporary(context);
+  const path = join(directory, 'reviews.json');
+  const id = 'a'.repeat(24);
+  await writeFile(path, JSON.stringify({ version: 1, decisions: [{ id, source: 'local', status: 'reviewed', revision: 1, updatedAt: new Date(NOW).toISOString() }] }));
+  const store = new ReviewStore(path);
+  await store.load();
+  assert.equal(store.get(id).status, 'reviewed');
+  assert.equal(store.get(id, 'local-dev').status, 'unreviewed');
+  await store.update('b'.repeat(24), 'local', 'investigating', 0, 'local-dev');
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, 2);
+  assert.equal(saved.decisions.length, 2);
+  assert.equal(saved.decisions.find((decision) => decision.id === id).organizationId, null);
+});
+
+test('correlation retains validated client IDs and links feedback without inventing a trace', () => {
+  const record = fixture();
+  record.resourceSpans[0].resource = { attributes: [...resource.attributes, attr('session.id', 'example-window')] };
+  for (const span of record.resourceSpans[0].scopeSpans[0].spans) span.attributes.push(attr('gen_ai.conversation.id', 'example-conversation'));
+  record.resourceSpans[0].scopeSpans[0].spans[2].attributes.push(attr('gen_ai.tool.call.id', 'example-call'));
+  record.resourceLogs = [{ resource: record.resourceSpans[0].resource, scopeLogs: [{ scope: { name: 'copilot-chat' }, logRecords: [{
+    timeUnixNano: nano(NOW - 500), body: { stringValue: 'PRIVATE-CANARY-body' },
+    attributes: [attr('event.name', 'copilot_chat.user.feedback'), attr('conversation_id', 'example-conversation')],
+  }] }] }];
+  const data = insights([record, structuredClone(record)]);
+  assert.equal(data.correlation.traces, 1);
+  assert.equal(data.correlation.linkedChildSpans, 2);
+  assert.equal(data.correlation.conversations, 1);
+  assert.equal(data.correlation.sessions, 1);
+  assert.equal(data.correlation.spansWithSessionId, 3);
+  assert.equal(data.correlation.toolCallsWithId, 1);
+  assert.equal(data.correlation.feedbackLogs, 1);
+  assert.equal(data.correlation.matchedFeedbackLogs, 1);
+  assert.equal(data.summary.calls, 1);
+  assert.equal(normalizeRecords([record]).feedback[0].traceId, null);
+  assert.ok(!JSON.stringify(data).includes('PRIVATE-CANARY'));
+});
+
+test('correlation does not join foreign traces, windows, sessions or malformed labels', () => {
+  const record = fixture();
+  record.resourceSpans[0].resource = { attributes: [...resource.attributes, attr('session.id', 'https://private.example.invalid/window')] };
+  modelSpan(record).traceId = '2'.repeat(32);
+  modelSpan(record).attributes.push(attr('gen_ai.conversation.id', 'private@example.invalid'));
+  const normalized = normalizeRecords([record]);
+  normalized.feedback = [
+    { timestamp: NOW - 500, traceId: '3'.repeat(32), conversationId: null },
+    { timestamp: NOW - 500, traceId: null, conversationId: 'unseen-conversation' },
+    { timestamp: NOW + 1, traceId: '1'.repeat(32) },
+  ];
+  const data = composeInsights(normalized, { now: NOW });
+  assert.equal(data.correlation.linkedChildSpans, 1);
+  assert.equal(data.correlation.sessions, 0);
+  assert.equal(data.correlation.conversations, 0);
+  assert.equal(data.correlation.feedbackLogs, 2);
+  assert.equal(data.correlation.matchedFeedbackLogs, 0);
+  assert.ok(!JSON.stringify(data).includes('private.example.invalid'));
+});
+
+test('malformed supplied feedback trace IDs cannot fall back to a conversation match', () => {
+  const record = fixture();
+  modelSpan(record).attributes.push(attr('gen_ai.conversation.id', 'example-conversation'));
+  const baseLog = {
+    timeUnixNano: nano(NOW - 500),
+    attributes: [attr('event.name', 'copilot_chat.user.feedback'), attr('conversation_id', 'example-conversation')],
+  };
+  record.resourceLogs = [{ resource, scopeLogs: [{ scope: { name: 'copilot-chat' }, logRecords: [
+    { ...baseLog, traceId: 'not-a-trace' },
+    { ...baseLog, traceId: '0'.repeat(32) },
+    { ...baseLog, traceId: '1'.repeat(32), spanId: 'not-a-span' },
+    { ...baseLog, spanId: 'b'.repeat(16) },
+  ] }] }];
+  const data = insights([record]);
+  assert.equal(data.quality.logRecords, 4);
+  assert.equal(data.correlation.feedbackLogs, 0);
+  assert.equal(data.correlation.matchedFeedbackLogs, 0);
+});
+
+test('feedback uses an exact trace/span or conversation/session pair within the selected window', () => {
+  const record = fixture();
+  record.resourceSpans[0].resource = { attributes: [...resource.attributes, attr('session.id', 'example-window')] };
+  modelSpan(record).attributes.push(attr('gen_ai.conversation.id', 'example-conversation'));
+  const normalized = normalizeRecords([record]);
+  normalized.feedback = [
+    { timestamp: NOW - 500, traceId: '1'.repeat(32), spanId: 'b'.repeat(16) },
+    { timestamp: NOW - 500, traceId: '1'.repeat(32) },
+    { timestamp: NOW - 500, conversationId: 'example-conversation', sessionId: 'example-window' },
+    { timestamp: NOW - 500, conversationId: 'example-conversation' },
+    { timestamp: NOW - 500, traceId: '1'.repeat(32), spanId: 'd'.repeat(16) },
+    { timestamp: NOW - 500, traceId: '2'.repeat(32), conversationId: 'example-conversation' },
+    { timestamp: NOW - 500, conversationId: 'example-conversation', sessionId: 'another-window' },
+    { timestamp: NOW - 8 * 86_400_000, conversationId: 'example-conversation' },
+  ];
+  const data = composeInsights(normalized, { now: NOW });
+  assert.equal(data.correlation.feedbackLogs, 7);
+  assert.equal(data.correlation.matchedFeedbackLogs, 4);
+});
+
+test('demo correlation is fictional and configuration cannot replace its reserved organization', async () => {
+  const demo = composeInsights(demoTelemetry(NOW), { source: 'demo', now: NOW });
+  assert.equal(demo.organizationId, 'synthetic-demo');
+  assert.ok(demo.correlation.conversations > 0);
+  assert.ok(demo.correlation.linkedChildSpans > 0);
+  for (const organizationId of ['synthetic-demo', '', '../private', 'private@example.invalid', null, 123, ['local-vscode']]) {
+    await assert.rejects(createApp({ organizationId }), { code: 'invalid-organization' });
+  }
 });
 
 test('browser navigation is allowed but cross-site API reads and non-JSON or oversized writes are blocked', async (context) => {

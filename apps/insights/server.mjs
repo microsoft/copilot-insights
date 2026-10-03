@@ -10,7 +10,7 @@ import { REVIEW_STATUSES, ReviewStore } from './lib/reviews.mjs';
 import { readTelemetry } from './lib/telemetry.mjs';
 
 const publicRoot = new URL('./public/', import.meta.url);
-const defaultTelemetry = fileURLToPath(new URL('../../deploy/local/.data/telemetry.jsonl', import.meta.url));
+const defaultTelemetry = fileURLToPath(new URL('../../deploy/local/.data/vscode-telemetry.jsonl', import.meta.url));
 const defaultReviews = fileURLToPath(new URL('../../deploy/local/.data/reviews.json', import.meta.url));
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -34,10 +34,14 @@ function send(response, status, data, type = 'application/json; charset=utf-8') 
   response.end(type.startsWith('application/json') ? JSON.stringify(data) : data);
 }
 
-function validateScope(source, days) {
-  if (!['local', 'demo'].includes(source) || ![7, 14, 30].includes(days)) {
-    throw new AppError('invalid-scope', 'Choose the local collector or synthetic demo, and a 7, 14, or 30 day window.', 400);
+function validateScope(organizations, organizationId, source, days) {
+  const organization = organizationId !== undefined
+    ? organizations.find((entry) => entry.id === organizationId)
+    : source !== undefined ? organizations.find((entry) => entry.source === source) : organizations[0];
+  if (!organization || (source !== undefined && organization.source !== source) || ![7, 14, 30].includes(days)) {
+    throw new AppError('invalid-scope', 'Choose a configured organization and a 7, 14, or 30 day window. Organization and legacy source selectors must agree.', 400);
   }
+  return organization;
 }
 
 async function readBody(request) {
@@ -63,15 +67,23 @@ async function readBody(request) {
   catch { throw new AppError('invalid-json', 'The review request is not valid JSON.', 400); }
 }
 
-export async function createApp({ telemetryPath = defaultTelemetry, reviewPath = defaultReviews, organizationId = 'local-dev', clock = Date.now } = {}) {
+export async function createApp({ telemetryPath = defaultTelemetry, reviewPath = defaultReviews, organizationId = 'local-vscode', organizationName = 'My VS Code organization', clock = Date.now } = {}) {
+  if (typeof organizationId !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(organizationId) || organizationId === 'synthetic-demo'
+    || typeof organizationName !== 'string' || !organizationName.trim() || organizationName.length > 64) {
+    throw new AppError('invalid-organization', 'Configure a non-demo organization ID and a display name of at most 64 characters.');
+  }
+  const organizations = [
+    { id: 'synthetic-demo', name: 'Demo organization', source: 'demo' },
+    { id: organizationId, name: organizationName, source: 'local' },
+  ];
   const store = new ReviewStore(reviewPath);
   await store.load();
   const reviewToken = randomBytes(32).toString('hex');
-  const snapshot = async (source, days) => {
+  const snapshot = async (organization, days) => {
     const now = clock();
-    const input = source === 'demo' ? demoTelemetry(now) : await readTelemetry(telemetryPath, organizationId);
-    const data = composeInsights(input, { source, days, now });
-    for (const finding of data.findings) finding.review = store.get(finding.id);
+    const input = organization.source === 'demo' ? demoTelemetry(now) : await readTelemetry(telemetryPath, organization.id);
+    const data = { ...composeInsights(input, { source: organization.source, days, now }), organization };
+    for (const finding of data.findings) finding.review = store.get(finding.id, organization.id);
     return data;
   };
   const server = createServer({ maxHeaderSize: 8192, requestTimeout: 10_000, headersTimeout: 10_000 }, async (request, response) => {
@@ -88,33 +100,36 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
       }
       if (request.method === 'GET' && url.pathname === '/api/health') {
         send(response, 200, { status: 'ok', mode: 'local-evaluation' });
+      } else if (request.method === 'GET' && url.pathname === '/api/organizations') {
+        if (url.search) throw new AppError('invalid-query', 'The organization catalog does not accept filters.', 400);
+        send(response, 200, { defaultOrganizationId: organizations[0].id, organizations });
       } else if (request.method === 'GET' && url.pathname === '/api/insights') {
-        if ([...url.searchParams.keys()].some((key) => !['source', 'days'].includes(key))
-          || url.searchParams.getAll('source').length > 1 || url.searchParams.getAll('days').length > 1) {
-          throw new AppError('invalid-query', 'Only source and days filters are supported.', 400);
+        if ([...url.searchParams.keys()].some((key) => !['organization', 'source', 'days'].includes(key))
+          || ['organization', 'source', 'days'].some((key) => url.searchParams.getAll(key).length > 1)) {
+          throw new AppError('invalid-query', 'Only organization, legacy source, and days filters are supported, without duplicates.', 400);
         }
-        const source = url.searchParams.get('source') ?? 'local';
+        const source = url.searchParams.get('source') ?? undefined;
         const days = Number(url.searchParams.get('days') ?? 7);
-        validateScope(source, days);
-        send(response, 200, { ...await snapshot(source, days), reviewToken });
+        const organization = validateScope(organizations, url.searchParams.get('organization') ?? undefined, source, days);
+        send(response, 200, { ...await snapshot(organization, days), reviewToken });
       } else if (request.method === 'POST' && url.pathname === '/api/reviews') {
         if (request.headers.origin !== origin || request.headers['x-review-token'] !== reviewToken) {
           request.resume();
           throw new AppError('review-token-required', 'Open this local site and refresh before saving a decision.', 403);
         }
         const body = await readBody(request);
-        const allowedKeys = ['source', 'days', 'findingId', 'status', 'expectedRevision'];
+        const allowedKeys = ['organizationId', 'source', 'days', 'findingId', 'status', 'expectedRevision'];
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !allowedKeys.includes(key))
           || typeof body.findingId !== 'string' || !/^[a-f0-9]{24}$/.test(body.findingId)
           || !REVIEW_STATUSES.includes(body.status) || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0) {
           throw new AppError('invalid-review', 'Only a finding identifier, scope, decision status, and revision are accepted. Free-text notes are not stored.', 400);
         }
-        validateScope(body.source, body.days);
-        const current = await snapshot(body.source, body.days);
+        const organization = validateScope(organizations, body.organizationId, body.source, body.days);
+        const current = await snapshot(organization, body.days);
         if (!current.findings.some((finding) => finding.id === body.findingId)) {
           throw new AppError('evidence-changed', 'The evidence or time window changed. Refresh and review the current finding.', 409);
         }
-        const review = await store.update(body.findingId, body.source, body.status, body.expectedRevision);
+        const review = await store.update(body.findingId, organization.source, body.status, body.expectedRevision, organization.id);
         send(response, 200, { review });
       } else if (request.method === 'GET' && staticFiles.has(url.pathname)) {
         const [name, type] = staticFiles.get(url.pathname);
@@ -139,7 +154,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const server = await createApp({
       telemetryPath: process.env.INSIGHTS_TELEMETRY_PATH ?? defaultTelemetry,
       reviewPath: process.env.INSIGHTS_REVIEW_PATH ?? defaultReviews,
-      organizationId: process.env.INSIGHTS_ORGANIZATION_ID ?? 'local-dev',
+      organizationId: process.env.INSIGHTS_ORGANIZATION_ID ?? 'local-vscode',
+      organizationName: process.env.INSIGHTS_ORGANIZATION_NAME ?? 'My VS Code organization',
     });
     const port = Number(process.env.PORT ?? 3000);
     const host = process.env.HOST ?? '127.0.0.1';

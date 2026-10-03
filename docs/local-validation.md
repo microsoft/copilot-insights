@@ -2,7 +2,43 @@
 
 ## Result
 
-**The Docker Compose deployment, synthetic integration checks, and one native Windows Local Copilot emission/capture/restore test work locally, including the analytics/human review portal. Shared, authenticated team analytics and the Intune-managed production client remain unimplemented.**
+**The Docker Compose deployment, isolated synthetic integration checks, and native Windows Local Copilot emission/capture/restore checks work locally, including the organization-based analytics/human review portal. Shared, authenticated team analytics and the Intune-managed production client remain unimplemented.**
+
+## Organization walkthrough
+
+On **October 3, 2026 UTC/PDT**, the [revised quick start](../README.md#try-it-on-your-machine) was exercised against the rebuilt local Compose stack. This was a **new native-client run**, not a replay of the historical mixed fixture/native capture below.
+
+1. Opened the portal with **Demo organization** selected by default. It displayed 161 fictional model calls and 391,431 observed tokens for the selected seven-day window. The separate **My VS Code organization** had an empty baseline in the new `vscode-telemetry.jsonl` output; the old `telemetry.jsonl` was not imported.
+2. Ran `setup-client.ps1 Install -Local -Temporary` with a unique diagnostic cohort marker. Opened a disposable folder in VS Code **1.140.0**, trusted only that folder, and submitted the guide's harmless file-read/terminal-print task through native **Local / Agent** Copilot. The captured native `copilot-chat` service version was **0.68.0**. The response returned the sample file contents and terminal marker; it was marked **Helpful**. No fixture emitter, direct OTLP POST, or Agent Host command substituted for this action.
+3. Refreshed **My VS Code organization**, inspected overview, models/tools, correlation and evidence, and switched between organizations. The demo totals were unchanged by native ingestion. A demo review decision did not change the native organization's review queue.
+4. Ran `restore-client.ps1`, verified the original user settings by SHA-256 byte comparison, and verified removal of the temporary snapshot. Removed only the disposable folder's trust and closed only its test window. No settings snapshot, raw native capture, diagnostic IDs, internal project files, or private deployment metadata were committed.
+
+| Native organization measure | Before | After |
+|---|---:|---:|
+| Agent runs | 0 | 1 |
+| Model calls | 0 | 10 |
+| Tool executions | 0 | 5 |
+| Observed model tokens | Not reported (empty) | 112,707 |
+| Linked child spans | 0 | 6 of 6 |
+| Conversation IDs | 0 | 1 across 7 spans |
+| Window/session IDs | 0 | 1 across all 16 spans |
+| Tool spans with a tool-call ID | 0 | 2 of 5 |
+| Correlated feedback logs | 0 | 1 of 1 |
+| Rule-based review findings at the first post-task refresh | 0 | 2 |
+
+The main native trace contained one agent span, three model spans, and three tool spans. The native extension also emitted seven auxiliary model calls and two auxiliary tool spans outside that trace. Those eligible spans explain the portal totals; parent token summaries and metric samples were not added again. All ten model outcomes remained **unknown**, rather than being inferred successful from the absence of errors. Empty native tool-call IDs stayed missing.
+
+The collector assigned `copilot_insights.organization.id=local-vscode` to all three signal types. It preserved native trace/span/parent IDs, the window/session ID, conversation IDs, and available tool-call IDs. The native feedback log had `conversation_id` and no trace ID; the portal matched its conversation and window/session without inventing a trace. These are diagnostic identifiers, not user identity or tenant authorization. See the [correlation rules](analytics.md#correlation-ids).
+
+Nine native metric families arrived as histograms and sums, along with the feedback log. They did not carry explicit OTLP metric units; none were fabricated. The portal derives tokens and durations from spans, so this remains a separate native metric/backend qualification gap. Checks found no sample file/command/content markers in the sanitized capture; these narrow checks do not close the broader privacy gaps. The freshness rule can add another finding after 15 minutes without new activity.
+
+Browser checks confirmed organization selection and URLs, native model/tool tables, expandable evidence identifiers, and six parent-linked child spans in the actual Aspire trace. A demo review decision persisted after rebuilding/recreating the portal container; native findings retained their separate unreviewed state.
+
+Maintainer fixtures were sent to a **separate disposable collector and `verification-lab` output**, never into the native organization's file or the demo generator. Its base privacy/correlation pipeline and collector-to-analytics checks passed: one agent, one model call, one tool call, 1,380 tokens, two linked children, a preserved session/tool-call ID, one matched feedback record, and no canary leakage. The native output file was byte-for-byte unchanged by that synthetic test, and the temporary collector was removed. Synthetic success remains separate from native proof.
+
+All **33 analytics/API tests** and the setup/restore, telemetry-reader, fixture-contract, remote-verification, certificate, and Azure-template PowerShell suites passed. The local listener remains loopback-only. This exercise does not establish fleet, cross-platform, comprehensive privacy, cloud-ingestion, or authenticated shared-analytics readiness. The [previous Azure validation resources were removed](azure-validation.md#retention-and-cleanup); organization production onboarding remains the [Intune plan](intune-deployment.md), not employee-run scripts.
+
+## Earlier validation history
 
 Reviewed the [quick start](../README.md), [participant guide](client-setup.md), [infrastructure guide](infrastructure.md), [architecture](architecture.md), [data contract](data-contract.md), and [rollout status](rollout-plan.md). M3 was initially not started; the local review prototype was added afterward as described in the [analytics guide](analytics.md). The native fallback and initial two-container Docker evidence below are retained as validation history.
 

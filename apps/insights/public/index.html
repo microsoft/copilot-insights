@@ -25,7 +25,7 @@
       <button class="button button-secondary" id="refresh-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.5 8a7 7 0 0 1 12-3L20 8M4 16l2.5 3a7 7 0 0 0 12-3"/></svg>Refresh data</button>
     </section>
     <section class="filters" aria-label="Analytics filters">
-      <div class="source-control"><label for="data-source">Data source</label><select id="data-source"><option value="local">Local collector</option><option value="demo">Synthetic demo</option></select></div>
+      <div class="source-control"><label for="organization-selector">Organization</label><select id="organization-selector" disabled><option value="">Loading organizations…</option></select></div>
       <div class="scope-note"><span class="scope-icon" aria-hidden="true">◎</span><div>Metadata only<span>No prompts, code, or identities in this view</span></div></div>
       <fieldset class="time-filter"><legend>Time window <span>· UTC days</span></legend><div class="segmented-control"><button type="button" data-days="7" aria-pressed="true">7 days</button><button type="button" data-days="14" aria-pressed="false">14 days</button><button type="button" data-days="30" aria-pressed="false">30 days</button></div></fieldset>
     </section>
@@ -44,11 +44,11 @@
     <div class="dialog-header"><div><div class="eyebrow">A SMALLER DATA FOOTPRINT</div><h2 id="policy-title" tabindex="-1">Local by design</h2></div><button class="close-button" id="close-policy" type="button" aria-label="Close data and privacy">×</button></div>
     <div class="dialog-body policy-body">
       <p>This is a local evaluation workspace, not a shared or authenticated team service.</p>
-      <h3>What this view reads</h3><p>Only a narrow projection of this project's sanitized collector file: operation type, validated model/tool labels, token counts, span durations, explicit outcomes, and trace correlation. There is no raw-record endpoint.</p>
+      <h3>What this view reads</h3><p>Only a narrow projection of this project's sanitized collector file: operation type, validated model/tool labels, token counts, span durations, explicit outcomes, and validated trace/span, conversation, window/session, and tool-call identifiers. These identifiers are diagnostic metadata, not proof of an anonymous dataset. There is no raw-record endpoint.</p>
       <h3>What stays out</h3><p>Prompts, responses, source code, file paths, identities, internal datasets, and private service connections. No browser trackers, external fonts, uploads, or third-party API calls are used.</p>
-      <h3>Demo means demo</h3><p>The synthetic source is generated independently on this machine. It is never mixed with the collector source or presented as real usage.</p>
-      <h3>Your review decisions</h3><p>Only a fixed status, evidence fingerprint, revision, source, and timestamp are saved locally. Free-text notes and reviewer identities are intentionally not collected. Decisions are scoped to the exact evidence snapshot; changed evidence needs a new review.</p>
-      <h3>Know the limits</h3><p>The UI is not a substitute for collector privacy qualification. Existing pipeline gaps remain. Real-client and Azure validation, shared authentication, and organization-level authorization are not implemented here. Do not publish this service or enable real-user collection without approval.</p>
+      <h3>Two separate organizations</h3><p>The Demo organization contains independently generated fictional examples. My VS Code organization reads the collector's configured organization only. The collector overwrites any client-supplied organization ID. The selector does not create tenants or provide shared-service authorization.</p>
+      <h3>Your review decisions</h3><p>Only a fixed status, evidence fingerprint, revision, source, organization ID, and timestamp are saved locally. Free-text notes and reviewer identities are intentionally not collected. Decisions are scoped to the organization and exact evidence snapshot; changed evidence needs a new review.</p>
+      <h3>Know the limits</h3><p>The UI is not a substitute for collector privacy qualification. Existing pipeline gaps remain. Fleet, Azure, privacy, and authenticated shared-access qualification remain open. Do not publish this service or enable real-user collection without approval.</p>
     </div>
   </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

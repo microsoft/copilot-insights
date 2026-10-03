@@ -26,8 +26,8 @@ The returned payloads include deliberate privacy-test canaries and rejected-reco
 param(
     [string] $Endpoint = 'http://localhost:4318',
     [string] $HealthEndpoint = 'http://localhost:13133/',
-    [string] $OutputPath = (Join-Path $PSScriptRoot '..' 'deploy' 'local' '.data' 'telemetry.jsonl'),
-    [string] $ExpectedOrganizationId = 'local-dev',
+    [string] $OutputPath = (Join-Path $PSScriptRoot '..' 'deploy' 'local' '.data' 'vscode-telemetry.jsonl'),
+    [string] $ExpectedOrganizationId = 'local-vscode',
     [string] $AccessTokenScope,
     [string] $TenantId,
     [int] $TimeoutSeconds = 30,
@@ -357,6 +357,8 @@ Assert-True ($chat.status.code -eq 2 -and (Get-AttributeValue $chat.attributes '
 $tool = $spans | Where-Object name -eq 'execute_tool' | Select-Object -First 1
 $agent = $spans | Where-Object name -eq 'invoke_agent' | Select-Object -First 1
 Assert-True ($chat.traceId -eq $agent.traceId -and $tool.traceId -eq $agent.traceId -and $chat.parentSpanId -eq $agent.spanId -and $tool.parentSpanId -eq $agent.spanId) 'Agent, model, and tool spans remain correlated'
+Assert-True (-not @($spans | Where-Object { (Get-AttributeValue $_.attributes 'gen_ai.conversation.id').stringValue -ne $conversationId })) 'Conversation ID preserved across agent, model, and tool spans'
+Assert-True ((Get-AttributeValue $tool.attributes 'gen_ai.tool.call.id').stringValue -eq "call-$runId") 'Tool-call ID preserved without inventing one'
 Assert-True ((Get-AttributeValue $tool.attributes 'github.copilot.tool.parameters.skill_name').stringValue -eq 'redacted') 'Path-shaped value in an allowed field replaced with "redacted"'
 
 $allowedResourceKeys = @('service.name', 'service.version', 'session.id', 'copilot_insights.organization.id', 'copilot_insights.cohort.id', 'copilot_insights.config.version', 'copilot_insights.rollout.ring')
@@ -364,6 +366,7 @@ $resourceKeys = @($resourceSpans | ForEach-Object { $_.resource.attributes } | F
 Assert-True (-not ($resourceKeys | Where-Object { $_ -notin $allowedResourceKeys })) "Resource keys limited to the allow-list ($($resourceKeys -join ', '))"
 $organization = (Get-AttributeValue $resourceSpans[0].resource.attributes 'copilot_insights.organization.id').stringValue
 Assert-True ($organization -eq $ExpectedOrganizationId) "Client-supplied organization replaced with configured value '$ExpectedOrganizationId'"
+Assert-True (-not @($resourceSpans | Where-Object { (Get-AttributeValue $_.resource.attributes 'session.id').stringValue -ne "session-$runId" })) 'Client window/session ID preserved on every span resource'
 $cohort = (Get-AttributeValue $resourceSpans[0].resource.attributes 'copilot_insights.cohort.id').stringValue
 Assert-True ($cohort -eq 'redacted') 'Non-identifier resource value replaced with "redacted"'
 
@@ -396,4 +399,4 @@ Assert-True ((Get-AttributeValue $logRecords[0].attributes 'participant').string
 
 Write-Host ''
 Write-Host "Verification passed (run $runId)." -ForegroundColor Green
-Write-Host 'Refresh the insights portal with Local collector selected. Real-client emission remains a separate check.'
+Write-Host "Synthetic verification only. Select the portal organization mapped to '$ExpectedOrganizationId' if it is configured; real-client emission remains a separate check."

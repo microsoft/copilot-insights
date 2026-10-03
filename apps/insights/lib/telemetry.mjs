@@ -27,6 +27,10 @@ function label(value) {
     ? value : 'Unknown';
 }
 
+function correlationId(value) {
+  return typeof value === 'string' && value !== 'redacted' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value) ? value : null;
+}
+
 function tokenCount(value) {
   if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value))) return null;
   const count = Number(value);
@@ -66,6 +70,9 @@ function normalizeSpan(span, resource, scope, organizationId) {
     traceId,
     spanId,
     parentSpanId,
+    sessionId: correlationId(attribute(resource?.attributes, 'session.id')),
+    conversationId: correlationId(attribute(span.attributes, 'gen_ai.conversation.id')),
+    toolCallId: correlationId(attribute(span.attributes, 'gen_ai.tool.call.id')),
     operation,
     timestamp: endedAt ?? startedAt,
     durationMs: startedAt !== null && endedAt !== null && endedAt >= startedAt ? endedAt - startedAt : null,
@@ -81,6 +88,7 @@ function normalizeSpan(span, resource, scope, organizationId) {
 
 export function normalizeRecords(records, organizationId = 'local-dev') {
   const spans = new Map();
+  const feedback = new Map();
   const conflicts = new Set();
   const quality = { duplicateSpans: 0, conflictingSpans: 0, excludedSpans: 0, metricRecords: 0, logRecords: 0 };
   for (const record of records) {
@@ -88,6 +96,7 @@ export function normalizeRecords(records, organizationId = 'local-dev') {
       throw new AppError('invalid-telemetry', 'A complete telemetry record has an unsupported shape. No partial totals are shown.');
     }
     for (const group of collection(record.resourceSpans)) {
+      if (attribute(group.resource?.attributes, 'copilot_insights.organization.id') !== organizationId) continue;
       for (const scope of collection(group.scopeSpans)) {
         for (const candidate of collection(scope.spans)) {
           const span = normalizeSpan(candidate, group.resource, scope.scope, organizationId);
@@ -111,11 +120,31 @@ export function normalizeRecords(records, organizationId = 'local-dev') {
     }
     for (const group of collection(record.resourceLogs)) {
       if (attribute(group.resource?.attributes, 'copilot_insights.organization.id') !== organizationId) continue;
-      for (const scope of collection(group.scopeLogs)) quality.logRecords += collection(scope.logRecords).length;
+      for (const scope of collection(group.scopeLogs)) {
+        for (const log of collection(scope.logRecords)) {
+          quality.logRecords++;
+          if (attribute(group.resource?.attributes, 'service.name') !== 'copilot-chat' || scope.scope?.name !== 'copilot-chat') continue;
+          const name = attribute(log.attributes, 'event.name');
+          const timestamp = milliseconds(log.timeUnixNano) ?? milliseconds(log.observedTimeUnixNano);
+          if (!['copilot_chat.user.feedback', 'copilot_chat.edit.feedback'].includes(name) || timestamp === null) continue;
+          const traceId = identifier(log.traceId, 32);
+          const spanId = identifier(log.spanId, 16);
+          if ((log.traceId != null && log.traceId !== '' && !traceId)
+            || (log.spanId != null && log.spanId !== '' && (!spanId || !traceId))) continue;
+          const item = {
+            name, timestamp,
+            conversationId: correlationId(attribute(log.attributes, 'conversation_id') ?? attribute(log.attributes, 'gen_ai.conversation.id')),
+            sessionId: correlationId(attribute(group.resource?.attributes, 'session.id')),
+            traceId,
+            spanId,
+          };
+          feedback.set(fingerprint([organizationId, item]), item);
+        }
+      }
     }
   }
   quality.conflictingSpans = conflicts.size;
-  return { spans: [...spans.values()], quality };
+  return { organizationId, spans: [...spans.values()], feedback: [...feedback.values()], quality };
 }
 
 export async function readTelemetry(path, organizationId = 'local-dev') {

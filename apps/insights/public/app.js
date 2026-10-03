@@ -14,7 +14,8 @@ const views = {
 };
 const parameters = new URLSearchParams(location.search);
 const state = {
-  source: parameters.get('source') === 'demo' ? 'demo' : 'local',
+  source: parameters.get('source') === 'local' ? 'local' : 'demo',
+  organizationId: parameters.get('organization'), organizations: [],
   days: [7, 14, 30].includes(Number(parameters.get('days'))) ? Number(parameters.get('days')) : 7,
   view: Object.hasOwn(views, parameters.get('view')) ? parameters.get('view') : 'overview',
   data: null, error: null, reviewStatus: 'all', search: '',
@@ -181,9 +182,10 @@ function modelPreview(data) {
 
 function noData() {
   return element('section', { class: 'empty-state' }, element('div', { class: 'empty-icon' }, icon('inbox')),
-    element('h2', {}, 'Ready when your signals are'),
-    element('p', {}, 'No accepted spans are available in this window. Run the project’s synthetic verification, choose a wider window, or explore the separate demo. We never substitute sample data silently.'),
-    button('Explore synthetic demo', () => changeSource('demo'), 'primary'),
+    element('h2', {}, 'Your organization is ready for VS Code activity'),
+    element('p', {}, 'Enable local OpenTelemetry with setup-client.ps1 Install -Local -Temporary, reload a disposable VS Code window, and ask Local Copilot to read a sample file. Then refresh this organization. Ordinary terminal commands alone do not emit Copilot spans.'),
+    element('p', { class: 'small-note' }, 'The demo stays separate. Missing telemetry is never replaced by sample data. Restore your editor settings with restore-client.ps1 after the test.'),
+    button('View demo organization', () => changeOrganization('synthetic-demo'), 'primary'),
     button('Check data quality', () => changeView('quality'), 'link'));
 }
 
@@ -255,6 +257,8 @@ function renderQuality(data) {
       tile('Explicit model outcomes', percent(data.summary.knownOutcomeCoverage), `${number(data.summary.unknownOutcomes)} unknown outcomes and ${number(data.summary.cancelledCalls)} cancellations. Absence of errors is not success.`)),
     element('div', { class: 'bottom-grid' },
       element('section', { class: 'panel' }, panelHeading('Source & freshness', 'A snapshot, not a live-service guarantee'), facts([
+        ['Organization', data.organization.name],
+        ['Organization ID', data.organizationId],
         ['Source', data.source === 'demo' ? 'Isolated synthetic generator' : 'Read-only local collector'],
         ['Latest accepted span', dateTime(quality.latestTimestamp)],
         ['Freshness', data.source === 'demo' ? 'Demonstration, not live usage' : quality.latestTimestamp === null ? 'No accepted data' : quality.stale ? 'Older than 15 minutes' : 'Within 15 minutes'],
@@ -272,14 +276,34 @@ function renderQuality(data) {
         ['Metric records (not summed)', number(quality.metricRecords)],
         ['Log records (not counted as calls)', number(quality.logRecords)],
       ]))),
+    element('section', { class: 'panel' }, panelHeading('Correlation within this organization', 'IDs come from the client; the collector assigns the organization'), facts([
+      ['Distinct trace IDs', number(data.correlation.traces)],
+      ['Child spans linked to a parent in this window', `${number(data.correlation.linkedChildSpans)} of ${number(data.correlation.spansWithParent)}`],
+      ['Conversation IDs', `${number(data.correlation.conversations)} across ${number(data.correlation.spansWithConversationId)} spans`],
+      ['Window/session IDs', `${number(data.correlation.sessions)} across ${number(data.correlation.spansWithSessionId)} spans`],
+      ['Tool spans with a tool-call ID', number(data.correlation.toolCallsWithId)],
+      ['Feedback logs linked to spans in this window', `${number(data.correlation.matchedFeedbackLogs)} of ${number(data.correlation.feedbackLogs)}`],
+    ]), element('p', { class: 'small-note' }, 'A conversation can span several traces. Feedback without a trace ID joins by conversation ID and, when present, window/session ID. Missing parents can be outside this window. Sessions are not users; metric aggregates are not per-call joins.'),
+      data.correlation.recentTraces.length ? table([{ label: 'Recent trace ID' }, { label: 'Spans', numeric: true }, { label: 'Linked children', numeric: true }], data.correlation.recentTraces.map((trace) => [
+        data.source === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${trace.traceId}`, target: '_blank', rel: 'noreferrer' }, element('code', {}, trace.traceId)) : element('code', {}, trace.traceId),
+        number(trace.spans), number(trace.linkedChildren),
+      ]), 'Recent traces in the selected organization') : element('p', { class: 'small-note' }, 'No trace IDs reported yet.')),
     element('section', { class: 'panel' }, panelHeading('How to read these insights', 'Public, deterministic rules rather than generated conclusions'),
       element('ul', { class: 'policy-list' },
         element('li', {}, 'Counts use one canonical representation per operation. Exact replays are deduplicated by collector organization, service/scope, trace ID, and span ID; conflicting identities are excluded.'),
         element('li', {}, 'Tokens are observed consumption only. P95 is nearest-rank across reported model durations. The 5-second latency and 15-minute freshness thresholds are evaluation defaults, not production SLOs.'),
         element('li', {}, 'Model errors, cancellations, OK statuses, and unknown outcomes remain distinct. None is proof of task completion or individual productivity.'),
-        element('li', {}, 'Review decisions belong to the selected source, UTC window, and exact evidence snapshot. New evidence does not inherit a previous approval.'),
+        element('li', {}, 'Review decisions belong to the selected organization, UTC window, and exact evidence snapshot. New evidence or another organization cannot inherit a previous approval.'),
         element('li', {}, 'This local file adapter is not an authorized cloud query service. It does not complete real-client, privacy, Azure, or shared-access qualification.'))),
   );
+}
+
+function spanCorrelation(span, source) {
+  return element('details', { class: 'correlation-details' }, element('summary', {}, 'IDs & trace'), facts([
+    ['Trace ID', span.traceId], ['Span ID', span.spanId], ['Parent span ID', span.parentSpanId ?? 'Not reported'],
+    ['Conversation ID', span.conversationId ?? 'Not reported'], ['Window/session ID', span.sessionId ?? 'Not reported'],
+    ['Tool-call ID', span.toolCallId ?? 'Not reported'],
+  ]), source === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${span.traceId}`, target: '_blank', rel: 'noreferrer' }, 'Open trace in Aspire') : 'Synthetic trace; not sent to a collector');
 }
 
 function openReview(finding) {
@@ -287,14 +311,14 @@ function openReview(finding) {
   const dialog = byId('review-dialog');
   const data = state.data;
   const close = button('×', () => dialog.close(), 'quiet', { class: 'close-button', 'aria-label': 'Close evidence review' });
-  const sourceLabel = data.source === 'demo' ? 'Synthetic example · not real usage' : 'Local collector snapshot';
+  const sourceLabel = `${data.organization.name} · ${data.source === 'demo' ? 'Synthetic example, not real usage' : 'Local collector snapshot'}`;
   const evidenceRows = finding.evidence.map((span) => [
     element('span', { class: 'evidence-time' }, dateTime(span.timestamp)),
     element('div', {}, span.model ?? span.tool ?? span.operation, element('span', { class: 'review-description' }, span.operation)),
     `${number(span.inputTokens)} / ${number(span.outputTokens)}`,
     duration(span.durationMs),
     element('span', { class: `outcome-${span.outcome}` }, { error: 'Error', unknown: 'Unknown', cancelled: 'Cancelled', ok: 'OK' }[span.outcome]),
-    data.source === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${span.traceId}`, target: '_blank', rel: 'noreferrer', 'aria-label': `Open trace ${span.traceId.slice(0, 7)} in Aspire`, title: `Trace ${span.traceId}; span ${span.spanId}${span.parentSpanId ? `; parent ${span.parentSpanId}` : ''}` }, icon('external')) : 'Demo',
+    spanCorrelation(span, data.source),
   ]);
   const decision = element('select', { id: 'review-decision' }, Object.entries(statuses).map(([value, label]) => element('option', { value, selected: finding.review.status === value }, label)));
   const errorArea = element('div', { role: 'alert' });
@@ -305,7 +329,7 @@ function openReview(finding) {
     try {
       const response = await fetch('/api/reviews', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Review-Token': data.reviewToken },
-        body: JSON.stringify({ source: data.source, days: data.window.days, findingId: finding.id, status: decision.value, expectedRevision: finding.review.revision }),
+        body: JSON.stringify({ organizationId: data.organizationId, days: data.window.days, findingId: finding.id, status: decision.value, expectedRevision: finding.review.revision }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error?.message ?? 'The decision could not be saved.');
@@ -343,7 +367,8 @@ function openReview(finding) {
 function updateChrome() {
   byId('page-title').textContent = views[state.view][0];
   byId('page-description').textContent = views[state.view][1];
-  byId('data-source').value = state.source;
+  byId('organization-selector').value = state.organizationId ?? '';
+  byId('organization-selector').disabled = !state.organizations.length;
   document.querySelectorAll('[data-days]').forEach((node) => node.setAttribute('aria-pressed', String(Number(node.dataset.days) === state.days)));
   document.querySelectorAll('[data-view]').forEach((node) => {
     const selected = node.dataset.view === state.view;
@@ -351,13 +376,15 @@ function updateChrome() {
     node.tabIndex = selected ? 0 : -1;
   });
   byId('view-panel').setAttribute('aria-labelledby', `tab-${state.view}`);
-  const query = new URLSearchParams({ source: state.source, days: String(state.days), view: state.view });
-  history.replaceState(null, '', `/?${query}`);
+  if (state.organizationId) {
+    const query = new URLSearchParams({ organization: state.organizationId, days: String(state.days), view: state.view });
+    history.replaceState(null, '', `/?${query}`);
+  }
   const notice = byId('source-notice');
   notice.className = `source-notice${state.source === 'demo' ? ' notice-demo' : ''}`;
   notice.replaceChildren(icon('info'), element('span', {},
-    element('span', { class: 'notice-label' }, state.source === 'demo' ? 'Synthetic demonstration. ' : 'Local collector snapshot. '),
-    state.source === 'demo' ? 'Independently generated examples, not real usage. Demo data and decisions are isolated from collector data.'
+    element('span', { class: 'notice-label' }, `${state.organizations.find((entry) => entry.id === state.organizationId)?.name ?? 'Loading organization'}: `),
+    state.source === 'demo' ? 'Fictional sample data, ready to explore. Next, enable VS Code logging and switch to your local organization. Data and decisions stay separate.'
       : state.data?.quality.fixtureTaggedSpans ? 'Verification fixtures are present. Sample activity is not real-user usage.'
         : 'Only the narrow metadata projection is displayed. No source data is sent to external services.'));
   byId('review-count').textContent = state.data ? number(pending(state.data.findings).length) : '—';
@@ -383,8 +410,9 @@ function changeView(view) {
   render();
 }
 
-function changeSource(source) {
-  state.source = source;
+function changeOrganization(organizationId) {
+  state.organizationId = organizationId;
+  state.source = state.organizations.find((entry) => entry.id === organizationId)?.source;
   state.search = '';
   state.reviewStatus = 'all';
   loadData();
@@ -401,10 +429,26 @@ async function loadData() {
   byId('view-panel').setAttribute('aria-busy', 'true');
   render();
   try {
-    const response = await fetch(`/api/insights?source=${state.source}&days=${state.days}`, { signal: controller.signal });
+    if (!state.organizations.length) {
+      const catalogResponse = await fetch('/api/organizations', { signal: controller.signal });
+      const catalog = await catalogResponse.json();
+      if (!catalogResponse.ok || !Array.isArray(catalog.organizations)) throw new Error('The organization catalog is unavailable. No substitute data is shown.');
+      if (version !== requestVersion) return;
+      state.organizations = catalog.organizations;
+      byId('organization-selector').replaceChildren(...catalog.organizations.map((entry) => element('option', { value: entry.id }, entry.name)));
+      if (!state.organizationId) {
+        const legacySource = parameters.get('source');
+        state.organizationId = legacySource ? catalog.organizations.find((entry) => entry.source === legacySource)?.id : catalog.defaultOrganizationId;
+      }
+    }
+    const selected = state.organizations.find((entry) => entry.id === state.organizationId);
+    if (!selected) throw new Error('This organization is not configured. Choose an organization from the list.');
+    state.source = selected.source;
+    const query = new URLSearchParams({ organization: state.organizationId, days: String(state.days) });
+    const response = await fetch(`/api/insights?${query}`, { signal: controller.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message ?? 'The local insights service could not return a snapshot.');
-    if (data.schemaVersion !== 1 || data.source !== state.source) throw new Error('The snapshot source or schema is not supported.');
+    if (data.schemaVersion !== 1 || data.source !== state.source || data.organizationId !== state.organizationId) throw new Error('The snapshot organization or schema is not supported.');
     if (version !== requestVersion) return;
     state.data = data;
   } catch (error) {
@@ -425,7 +469,7 @@ function notify(message) {
   toastTimer = setTimeout(() => { byId('toast').textContent = ''; }, 5000);
 }
 
-byId('data-source').addEventListener('change', (event) => changeSource(event.target.value));
+byId('organization-selector').addEventListener('change', (event) => changeOrganization(event.target.value));
 byId('refresh-button').addEventListener('click', loadData);
 document.querySelectorAll('[data-days]').forEach((node) => node.addEventListener('click', () => { state.days = Number(node.dataset.days); loadData(); }));
 const tabs = [...document.querySelectorAll('[data-view]')];

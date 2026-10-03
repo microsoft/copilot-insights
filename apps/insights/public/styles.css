@@ -65,6 +65,11 @@ select, input[type="search"] { color: #243047; background: white; border: 1px so
 .source-notice { display: flex; align-items: center; gap: 9px; padding: 11px 15px; font-size: 12px; border-radius: 7px; margin: 14px 0 18px; color: #4a6086; background: #edf3fc; border: 1px solid #e0e9f8; }
 .source-notice svg { flex-shrink: 0; }
 .source-notice.notice-demo { color: #805e21; background: #fff7e8; border-color: #f1dfba; }
+.correlation-details { min-width: 140px; max-width: 360px; }
+.correlation-details summary { cursor: pointer; color: var(--accent, #2563eb); }
+.correlation-details .fact-list { display: block; font-size: 12px; }
+.correlation-details dt { margin-top: 8px; }
+.correlation-details dd { margin: 2px 0 8px; overflow-wrap: anywhere; font-family: monospace; }
 .notice-label { font-weight: 650; }
 .view-tabs { display: flex; gap: 29px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .view-tabs button { display: inline-flex; align-items: center; gap: 8px; background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 13px 1px; font-size: 13px; color: var(--muted); white-space: nowrap; }

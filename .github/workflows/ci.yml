@@ -36,10 +36,16 @@ jobs:
         run: |
           docker compose -f deploy/local/compose.yaml exec -T insights node --input-type=module -e "
             import assert from 'node:assert/strict';
-            const response = await fetch('http://127.0.0.1:8080/api/insights?source=local&days=7');
+            const response = await fetch('http://127.0.0.1:8080/api/insights?organization=local-vscode&days=7');
             assert.equal(response.status, 200);
             const data = await response.json();
             assert.equal(data.source, 'local');
+            assert.equal(data.organizationId, 'local-vscode');
+            assert.equal(data.correlation.linkedChildSpans, 2);
+            assert.equal(data.correlation.conversations, 1);
+            assert.equal(data.correlation.sessions, 1);
+            assert.equal(data.correlation.toolCallsWithId, 1);
+            assert.equal(data.correlation.matchedFeedbackLogs, 1);
             assert.equal(data.summary.calls, 1);
             assert.equal(data.summary.agentRuns, 1);
             assert.equal(data.summary.toolCalls, 1);

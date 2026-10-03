@@ -9,7 +9,7 @@ RUN mkdir /app/state && chown node:node /app/state
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8080 \
-    INSIGHTS_TELEMETRY_PATH=/data/telemetry.jsonl \
+    INSIGHTS_TELEMETRY_PATH=/data/vscode-telemetry.jsonl \
     INSIGHTS_REVIEW_PATH=/app/state/reviews.json
 
 USER node

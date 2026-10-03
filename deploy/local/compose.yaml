@@ -9,7 +9,8 @@ services:
     image: copilot-insights-collector:local
     command: ["--config=/etc/copilot-insights/base.yaml", "--config=/etc/copilot-insights/local.yaml"]
     environment:
-      CI_ORGANIZATION_ID: local-dev
+      CI_ORGANIZATION_ID: local-vscode
+      CI_LOCAL_OUTPUT_PATH: /data/vscode-telemetry.jsonl
     ports:
       - "127.0.0.1:4318:4318"
       - "127.0.0.1:13133:13133"
@@ -31,6 +32,9 @@ services:
     build:
       context: ../../apps/insights
     image: copilot-insights-review:local
+    environment:
+      INSIGHTS_ORGANIZATION_ID: local-vscode
+      INSIGHTS_ORGANIZATION_NAME: My VS Code organization
     ports:
       - "127.0.0.1:3000:8080"
     volumes:

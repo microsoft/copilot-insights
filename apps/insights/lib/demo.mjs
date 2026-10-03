@@ -28,7 +28,7 @@ export function demoTelemetry(now = Date.now()) {
         ...(suffix === 'agent' ? {} : { parentSpanId: agentId }),
         startTimeUnixNano: String(BigInt(timestamp - elapsed) * 1_000_000n),
         endTimeUnixNano: String(BigInt(timestamp) * 1_000_000n),
-        attributes: [textAttribute('gen_ai.operation.name', operation), ...attributes],
+        attributes: [textAttribute('gen_ai.operation.name', operation), textAttribute('gen_ai.conversation.id', `demo-${traceId}`), ...attributes],
         status: { code: status },
       });
       spans.push(makeSpan('invoke_agent', 'agent', duration + 900, []));
@@ -37,12 +37,13 @@ export function demoTelemetry(now = Date.now()) {
         countAttribute('gen_ai.usage.input_tokens', 600 + modelIndex * 420 + callIndex * 93),
         ...(callIndex % 9 === 0 ? [] : [countAttribute('gen_ai.usage.output_tokens', 90 + callIndex * 27)]),
       ], isError ? 2 : callIndex % 7 === 0 ? 0 : 1));
-      spans.push(makeSpan('execute_tool', 'tool', 35 + callIndex * 13, [textAttribute('gen_ai.tool.name', tools[callIndex % tools.length])], 1));
+      spans.push(makeSpan('execute_tool', 'tool', 35 + callIndex * 13, [textAttribute('gen_ai.tool.name', tools[callIndex % tools.length]), textAttribute('gen_ai.tool.call.id', `demo-call-${seed}`)], 1));
     }
   }
   const records = [{ resourceSpans: [{
     resource: { attributes: [
       textAttribute('service.name', 'copilot-chat'),
+      textAttribute('session.id', 'demo-window'),
       textAttribute('copilot_insights.organization.id', 'synthetic-demo'),
     ] },
     scopeSpans: [{ scope: { name: 'copilot-chat' }, spans }],
