@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Local, metadata-only Copilot telemetry analytics and human review.">
+  <title>Copilot Insights · Review workspace</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to insights</a>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 22V15M16 22V8M25 22V12" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M5 27h22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+      <div><div class="brand-name">Copilot <strong>Insights</strong></div><div class="brand-caption">REVIEW WORKSPACE</div></div>
+    </div>
+    <div class="header-actions"><span class="environment-badge"><span class="status-dot"></span>Local evaluation</span><button class="button button-quiet" id="policy-button" type="button">Data &amp; privacy</button></div>
+  </header>
+  <main class="app-shell" id="main" tabindex="-1">
+    <section class="masthead" aria-labelledby="page-title">
+      <div><div class="eyebrow">OBSERVE. UNDERSTAND. REVIEW.</div><h1 id="page-title">Insights overview</h1><p id="page-description">A clearer picture of agent activity, with evidence behind every signal.</p></div>
+      <button class="button button-secondary" id="refresh-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.5 8a7 7 0 0 1 12-3L20 8M4 16l2.5 3a7 7 0 0 0 12-3"/></svg>Refresh data</button>
+    </section>
+    <section class="filters" aria-label="Analytics filters">
+      <div class="source-control"><label for="data-source">Data source</label><select id="data-source"><option value="local">Local collector</option><option value="demo">Synthetic demo</option></select></div>
+      <div class="scope-note"><span class="scope-icon" aria-hidden="true">◎</span><div>Metadata only<span>No prompts, code, or identities in this view</span></div></div>
+      <fieldset class="time-filter"><legend>Time window <span>· UTC days</span></legend><div class="segmented-control"><button type="button" data-days="7" aria-pressed="true">7 days</button><button type="button" data-days="14" aria-pressed="false">14 days</button><button type="button" data-days="30" aria-pressed="false">30 days</button></div></fieldset>
+    </section>
+    <div class="source-notice" id="source-notice" role="status">Connecting to the local insights service…</div>
+    <div class="view-tabs" role="tablist" aria-label="Insights views">
+      <button type="button" id="tab-overview" role="tab" aria-selected="true" aria-controls="view-panel" data-view="overview" tabindex="0">Overview</button>
+      <button type="button" id="tab-reviews" role="tab" aria-selected="false" aria-controls="view-panel" data-view="reviews" tabindex="-1">Review queue <span class="tab-count" id="review-count">—</span></button>
+      <button type="button" id="tab-models" role="tab" aria-selected="false" aria-controls="view-panel" data-view="models" tabindex="-1">Models &amp; tools</button>
+      <button type="button" id="tab-quality" role="tab" aria-selected="false" aria-controls="view-panel" data-view="quality" tabindex="-1">Data quality</button>
+    </div>
+    <section id="view-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" aria-busy="true"><div class="loading-state" role="status">Loading local insights…</div></section>
+    <footer class="app-footer"><span>Copilot Insights <span class="footer-dot">·</span> Open-source evaluation</span><span id="updated-at">No external analytics or tracking</span></footer>
+  </main>
+  <dialog id="review-dialog" class="review-dialog" aria-labelledby="review-title"></dialog>
+  <dialog id="policy-dialog" class="policy-dialog" aria-labelledby="policy-title">
+    <div class="dialog-header"><div><div class="eyebrow">A SMALLER DATA FOOTPRINT</div><h2 id="policy-title" tabindex="-1">Local by design</h2></div><button class="close-button" id="close-policy" type="button" aria-label="Close data and privacy">×</button></div>
+    <div class="dialog-body policy-body">
+      <p>This is a local evaluation workspace, not a shared or authenticated team service.</p>
+      <h3>What this view reads</h3><p>Only a narrow projection of this project's sanitized collector file: operation type, validated model/tool labels, token counts, span durations, explicit outcomes, and trace correlation. There is no raw-record endpoint.</p>
+      <h3>What stays out</h3><p>Prompts, responses, source code, file paths, identities, internal datasets, and private service connections. No browser trackers, external fonts, uploads, or third-party API calls are used.</p>
+      <h3>Demo means demo</h3><p>The synthetic source is generated independently on this machine. It is never mixed with the collector source or presented as real usage.</p>
+      <h3>Your review decisions</h3><p>Only a fixed status, evidence fingerprint, revision, source, and timestamp are saved locally. Free-text notes and reviewer identities are intentionally not collected. Decisions are scoped to the exact evidence snapshot; changed evidence needs a new review.</p>
+      <h3>Know the limits</h3><p>The UI is not a substitute for collector privacy qualification. Existing pipeline gaps remain. Real-client and Azure validation, shared authentication, and organization-level authorization are not implemented here. Do not publish this service or enable real-user collection without approval.</p>
+    </div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <noscript><p class="noscript">This local review workspace requires JavaScript. No external scripts are loaded.</p></noscript>
+</body>
+</html>

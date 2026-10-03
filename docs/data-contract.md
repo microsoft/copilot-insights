@@ -1,6 +1,25 @@
 # Data Contract and Privacy
 
-Status: proposed contract with a reference implementation. The allow-lists below are enforced by [collector/config/base.yaml](../collector/config/base.yaml) on the participant's machine and on the server, and they are checked with synthetic canaries. Field names were checked against Copilot's published emitter source and monitoring documentation. Field availability in real Copilot exports, and backend mappings, still require validation before real-user collection.
+Status: proposed contract with a reference implementation. The allow-lists below are enforced by [collector/config/base.yaml](../collector/config/base.yaml) on the participant's machine and on the server, and they are checked with synthetic canaries. Field names were checked against Copilot's published emitter source and monitoring documentation. One native Windows Local Copilot sample is verified; wider field coverage, privacy qualification, and backend mappings still require validation before real-user collection.
+
+## Signal compatibility and fixture provenance
+
+On October 2, 2026, the verification fixture's signal names and metric kinds were checked against [What gets collected](https://code.visualstudio.com/docs/agents/guides/monitoring-agents#_what-gets-collected), using the [published documentation snapshot](https://github.com/microsoft/vscode-docs/blob/8889b0542cb2144fb53f5f53bd19c1395e2d9fa1/docs/agents/guides/monitoring-agents.md). The public emitter's [metric definitions](https://github.com/microsoft/vscode-copilot-chat/blob/5863f5a7088958050792b5dccbe8b46c6e13eccc/src/platform/otel/common/genAiMetrics.ts) and [event definitions](https://github.com/microsoft/vscode-copilot-chat/blob/5863f5a7088958050792b5dccbe8b46c6e13eccc/src/platform/otel/common/genAiEvents.ts) were also inspected, including boolean tool-success values, the `event.name` log attribute, and feedback's `conversation_id` key.
+
+| Fixture signal | Documented type | This project's treatment |
+|---|---|---|
+| `invoke_agent`, `chat`, `execute_tool` | Spans | Retain approved metadata; normalize names; analytics count model tokens only once |
+| `gen_ai.client.operation.duration` | Histogram, seconds | Preserve histogram shape/unit; inspect in Aspire, not added to span totals |
+| `gen_ai.client.token.usage` | Histogram, tokens | Preserve separate `gen_ai.token.type` input/output observations; not additional model calls |
+| `copilot_chat.tool.call.count`, `copilot_chat.user.feedback.count` | Counters | Preserve cumulative monotonic OTLP Sums; do not sum repeated cumulative samples as new activity |
+| `copilot_chat.user.feedback` | Event carried as an OTLP log record | Keep allowed attributes, clear the body; not a portal review decision |
+| `execute_hook`, `gen_ai.client.inference.operation.details` | Documented span/event, respectively | Deliberately excluded by this project's narrower privacy contract |
+
+The verifier additionally injects `example.unapproved.metric`, `CANARY-*` values, and unknown/private-shaped attributes as **negative controls**. These are not claimed to be native Copilot output. Its `service.version=0.0.0-verification` and `copilot_insights.config.version=verify-…` identify generated fixtures; the latter is a project-owned label, not a VS Code signal. Parent-agent token totals, child-model token totals, and independent histogram samples describe overlapping usage, not three different charges.
+
+[Offline contract tests](../scripts/tests/fixture-contract.tests.ps1) check the selected names, OTLP types, units, correlation, and provenance without contacting a collector. The live [verification script](../scripts/verify.ps1) checks their sanitized output. These tests cover a documented subset, not every instrument or a complete emitter conformance suite. They do **not** run a Copilot process, establish real-client field availability, or qualify privacy for arbitrary native payloads. Actual Local Copilot actions and native trace provenance must be checked separately using the [README walkthrough](../README.md#optional-connect-vs-code).
+
+Native evidence is separate from the fixture: the [October 3, 2026 UTC local test](local-validation.md#native-client-emission-and-restoration) used VS Code 1.140.0 / Copilot Chat 0.68.0, retained `copilot-chat` service/scope identity, and captured actual file/terminal tool spans, metric families, and a `copilot_chat.user.feedback` event correlated by `conversation_id`. No synthetic emitter ran during that comparison. It establishes the tested subset, not complete emitter conformance or production approval.
 
 ## Collection purpose
 

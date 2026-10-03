@@ -25,6 +25,17 @@ param deployCollector bool = false
 @description('Collector image as repository:tag in the registry this template creates.')
 param collectorImage string = 'copilot-insights-collector:0.1.0'
 
+@description('Optional private DNS hostname for the collector. Supply a matching PFX and password when set.')
+param collectorHostname string = ''
+
+@secure()
+@description('Base64-encoded PFX for collectorHostname. Supply through a private parameter file, never source control.')
+param tlsCertificateData string = ''
+
+@secure()
+@description('Password of the PFX supplied in tlsCertificateData.')
+param tlsCertificatePassword string = ''
+
 @description('Address space of the dedicated virtual network.')
 param vnetAddressPrefix string = '10.60.0.0/22'
 
@@ -326,6 +337,25 @@ module environmentDns 'modules/environment-dns.bicep' = {
   }
 }
 
+resource collectorCertificate 'Microsoft.App/managedEnvironments/certificates@2024-03-01' = if (!empty(collectorHostname)) {
+  parent: containerAppsEnvironment
+  name: 'collector-tls'
+  location: location
+  properties: {
+    value: tlsCertificateData
+    password: tlsCertificatePassword
+  }
+}
+
+module collectorDns 'modules/environment-dns.bicep' = if (!empty(collectorHostname)) {
+  name: 'collector-custom-dns'
+  params: {
+    zoneName: collectorHostname
+    staticIp: containerAppsEnvironment.properties.staticIp
+    virtualNetworkIds: concat([vnet.id], clientVirtualNetworkIds)
+  }
+}
+
 resource collector 'Microsoft.App/containerApps@2024-03-01' = if (deployCollector) {
   name: collectorAppName
   location: location
@@ -344,6 +374,13 @@ resource collector 'Microsoft.App/containerApps@2024-03-01' = if (deployCollecto
         targetPort: 4318
         transport: 'http'
         allowInsecure: false
+        customDomains: empty(collectorHostname) ? [] : [
+          {
+            name: collectorHostname
+            bindingType: 'SniEnabled'
+            certificateId: collectorCertificate!.id
+          }
+        ]
         ipSecurityRestrictions: [for (cidr, i) in allowedClientCidrs: {
           name: 'client-${i}'
           action: 'Allow'
@@ -381,7 +418,11 @@ resource collector 'Microsoft.App/containerApps@2024-03-01' = if (deployCollecto
   dependsOn: [registryPull, telemetryPublisher, registryDnsZoneGroup, monitorDnsZoneGroup, privateDnsZoneLinks, environmentDns]
 }
 
-output collectorEndpoint string = 'https://${collectorAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+output collectorEndpoint string = empty(collectorHostname)
+  ? 'https://${collectorAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+  : 'https://${collectorHostname}'
+output collectorDeployed bool = deployCollector
+output containerAppsEnvironmentName string = containerAppsEnvironment.name
 output environmentStaticIp string = containerAppsEnvironment.properties.staticIp
 output registryLoginServer string = registry.properties.loginServer
 output registryName string = registry.name

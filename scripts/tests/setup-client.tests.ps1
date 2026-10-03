@@ -131,7 +131,139 @@ Test-Case 'Status reports the configured block' {
     Assert-That ($output -match 'local quick start') 'Status output did not report the mode.'
 }
 
-Remove-Item -LiteralPath $root -Recurse -Force
+Test-Case 'Temporary local setup restores existing OTel settings, comments, CRLF and BOM byte for byte' {
+    $case = New-SettingsCase "// keep this comment`r`n{`r`n  `"github.copilot.chat.otel.enabled`": true,`r`n  `"github.copilot.chat.otel.otlpEndpoint`": `"https://example.invalid`",`r`n  `"github.copilot.chat.otel.headers`": { `"X-Test`": `"not-a-credential`" },`r`n  `"editor.fontSize`": 14,`r`n  `"example.dateString`": `"2026-01-01T00:00:00Z`",`r`n}`r`n" -Bom
+    $before = Get-Bytes $case
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    $current = Get-Content -Raw -LiteralPath $case.Settings | ConvertFrom-Json -AsHashtable
+    Assert-That ($current['github.copilot.chat.otel.otlpEndpoint'] -eq 'http://localhost:4318') 'Not using the local collector.'
+    Assert-That (-not $current.Contains('github.copilot.chat.otel.headers')) 'Original exporter headers leaked into the temporary setup.'
+    Assert-That ($current['editor.fontSize'] -eq 14) 'An unrelated setting changed.'
+    Assert-That ((Get-Content -Raw -LiteralPath $case.Settings) -match '"example.dateString": "2026-01-01T00:00:00Z"') 'A string value was converted into a date.'
+    Assert-That ($current['github.copilot.chat.otel.captureContent'] -eq $false -and $current['github.copilot.chat.otel.captureIdentity'] -eq $false) 'Capture privacy flags are not off.'
+    & (Join-Path $PSScriptRoot '..' 'restore-client.ps1') -InstallRoot $case.InstallRoot | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $before) 'Restoration was not byte for byte.'
+    Assert-That (-not (Test-Path -LiteralPath $case.InstallRoot)) 'Sensitive temporary snapshot was not deleted.'
+}
+
+Test-Case 'Temporary setup and Restore support missing settings files' {
+    $case = New-SettingsCase '{}'
+    Remove-Item -LiteralPath $case.Settings
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+    Assert-That (-not (Test-Path -LiteralPath $case.Settings)) 'A settings file that did not originally exist was left behind.'
+}
+
+Test-Case 'Restore refuses concurrent edits and keeps the original snapshot' {
+    $case = New-SettingsCase '{ "github.copilot.chat.otel.enabled": false, "editor.fontSize": 14 }'
+    $before = Get-Bytes $case
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    $applied = [IO.File]::ReadAllBytes($case.Settings)
+    [IO.File]::AppendAllText($case.Settings, "`n// concurrent edit")
+    $edited = Get-Bytes $case
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Restore' } } 'Refusing to overwrite concurrent edits'
+    Assert-That ((Get-Bytes $case) -eq $edited) 'Concurrent settings edits were overwritten.'
+    Assert-That (Test-Path -LiteralPath (Join-Path $case.InstallRoot 'local-restore.json')) 'Recovery snapshot was deleted.'
+    [IO.File]::WriteAllBytes($case.Settings, $applied)
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $before) 'Recovery after reconciling edits failed.'
+}
+
+Test-Case 'Temporary installation cannot overwrite a pending snapshot or an existing installation' {
+    $case = New-SettingsCase '{}'
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    $before = Get-Bytes $case
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } } 'temporary local setup is active'
+    Assert-That ((Get-Bytes $case) -eq $before) 'A pending temporary setup was overwritten.'
+    Invoke-Setup $case @{ Action = 'Uninstall' } | Out-Null
+    Assert-That ((Get-Content -Raw -LiteralPath $case.Settings) -eq '{}') 'Uninstall did not delegate to Restore.'
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true } | Out-Null
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } } 'cannot replace an installed'
+    Invoke-Setup $case @{ Action = 'Uninstall' } | Out-Null
+}
+
+Test-Case 'Temporary setup still respects disabled telemetry' {
+    $case = New-SettingsCase '{ "telemetry.telemetryLevel": "off", "github.copilot.chat.otel.enabled": true }'
+    $before = Get-Bytes $case
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } } 'telemetry is turned off'
+    Assert-That ((Get-Bytes $case) -eq $before) 'Telemetry opt-out was changed.'
+}
+
+Test-Case 'Temporary mode cannot configure a remote endpoint' {
+    $case = New-SettingsCase '{}'
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Install'; Temporary = $true; Endpoint = 'https://example.invalid'; Scope = 'api://example/Telemetry.Write' } } 'only with Install -Local'
+    Assert-That (-not (Test-Path -LiteralPath $case.InstallRoot)) 'Invalid temporary setup created state.'
+}
+
+Test-Case 'Temporary setup refuses environment routing and content capture overrides' {
+    foreach ($name in 'OTEL_EXPORTER_OTLP_ENDPOINT', 'COPILOT_OTEL_CAPTURE_CONTENT') {
+        $previous = [Environment]::GetEnvironmentVariable($name, 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable($name, 'test-override', 'Process')
+            $case = New-SettingsCase '{}'
+            $before = Get-Bytes $case
+            Assert-Throws { Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } } 'cannot verify environment override'
+            Assert-That ((Get-Bytes $case) -eq $before) 'Environment override was ignored.'
+        } finally {
+            if ($null -eq $previous) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable($name, $previous, 'Process') }
+        }
+    }
+}
+
+Test-Case 'Temporary Install and Restore honor WhatIf' {
+    $case = New-SettingsCase '{ "github.copilot.chat.otel.enabled": false }'
+    $before = Get-Bytes $case
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true; WhatIf = $true } | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $before -and -not (Test-Path -LiteralPath $case.InstallRoot)) 'Temporary WhatIf changed files.'
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    $applied = Get-Bytes $case
+    & (Join-Path $PSScriptRoot '..' 'restore-client.ps1') -InstallRoot $case.InstallRoot -WhatIf | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $applied) 'Restore WhatIf changed settings.'
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $before) 'Restore is not idempotent.'
+}
+
+Test-Case 'Restore validates snapshot integrity and the settings path' {
+    $case = New-SettingsCase '{}'
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    $other = New-SettingsCase '{ "editor.fontSize": 20 }'
+    Assert-Throws { & (Join-Path $PSScriptRoot '..' 'restore-client.ps1') -InstallRoot $case.InstallRoot -SettingsPath $other.Settings } 'does not match'
+    $snapshotPath = Join-Path $case.InstallRoot 'local-restore.json'
+    $snapshotBytes = [IO.File]::ReadAllBytes($snapshotPath)
+    $snapshot = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json -AsHashtable
+    $snapshot.originalSha256 = 'bad-hash'
+    Set-Content -LiteralPath $snapshotPath -Value ($snapshot | ConvertTo-Json)
+    Assert-Throws { Invoke-Setup $case @{ Action = 'Restore' } } 'integrity check'
+    [IO.File]::WriteAllBytes($snapshotPath, $snapshotBytes)
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+}
+
+Test-Case 'Restore recovers a custom settings path when setup stops before writing installation state' {
+    $case = New-SettingsCase '{ "github.copilot.chat.otel.enabled": true }'
+    $before = Get-Bytes $case
+    Push-Location (Split-Path -Parent $case.Settings)
+    try { & $setup Install -Local -Temporary -SettingsPath './settings.json' -InstallRoot './install' *>&1 | Out-Null }
+    finally { Pop-Location }
+    Remove-Item -LiteralPath (Join-Path $case.InstallRoot 'state.json')
+    & (Join-Path $PSScriptRoot '..' 'restore-client.ps1') -InstallRoot $case.InstallRoot | Out-Null
+    Assert-That ((Get-Bytes $case) -eq $before) 'Restore did not recover the settings path from its snapshot.'
+}
+
+Test-Case 'Restore safely cleans up a snapshot when the original settings are already back' {
+    $case = New-SettingsCase '{}'
+    $before = [IO.File]::ReadAllBytes($case.Settings)
+    Invoke-Setup $case @{ Action = 'Install'; Local = $true; Temporary = $true } | Out-Null
+    [IO.File]::WriteAllBytes($case.Settings, $before)
+    Invoke-Setup $case @{ Action = 'Restore' } | Out-Null
+    Assert-That (-not (Test-Path -LiteralPath $case.InstallRoot)) 'An already-restored snapshot was left behind.'
+}
+
+$resolvedRoot = [IO.Path]::GetFullPath($root)
+$temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+if (-not $resolvedRoot.StartsWith((Join-Path $temporaryRoot 'copilot-insights-tests-'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected test cleanup path.' }
+Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
 if ($failures) { Write-Host "$failures test(s) failed." -ForegroundColor Red; exit 1 }
 Write-Host 'All setup-client tests passed.' -ForegroundColor Green
 exit 0

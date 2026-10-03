@@ -1,116 +1,66 @@
 # Client setup
 
-This guide is for people taking part in a Copilot Insights pilot. One script connects VS Code on your machine to your organization's collector, tells you whether it works, and removes everything again when you are done.
+**Organization deployment is administrator-managed through Microsoft Intune.** Employees do not clone this repository, run setup or startup scripts, choose telemetry endpoints, or handle tokens. Endpoint administrators own assignment, configuration, updates, health, and removal under the [Intune production plan](intune-deployment.md).
 
-## What changes on your machine
+**Current status:** that plan is not yet a released Intune package. One native Windows Local Copilot test has passed [local verification](local-validation.md#native-client-emission-and-restoration); production authentication, managed startup, privacy qualification, Azure delivery, and shared analytics remain release gates. Do not enroll real-user workloads until they pass.
 
-- **One block in your VS Code user settings.** It turns on Copilot's OpenTelemetry export, keeps content and identity capture off, and points the export at `127.0.0.1`. The block sits between `copilot-insights` marker comments. Nothing else in the file changes, and the script keeps a backup of the file until you uninstall.
-- **A forwarder process that runs as you.** The forwarder is the open-source [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), pinned to one version and checksum-verified, installed under `%LOCALAPPDATA%\CopilotInsights`. It listens only on `127.0.0.1`. It removes everything outside the [data contract](data-contract.md) before data leaves your machine, then forwards the rest to your organization's collector with a token from your Azure CLI sign-in.
+Just exploring? Use the [local demo](../README.md#try-it-on-your-machine), which needs no Azure setup. Its optional native-client exercise uses a disposable project, not an organization rollout.
 
-You do not need administrator rights, and nothing is installed system-wide.
+## Managed onboarding
 
-### Why a forwarder
+1. Your administrator confirms that the Windows device is enrolled in Intune and assigned to the approved deployment ring. They supply a collection notice, approved network requirements, and a support contact.
+2. Intune installs the qualified client package and applies the approved Copilot managed telemetry policy. The forwarder filters metadata on the device before authenticating uploads to the private collector.
+3. Save your work and reload the designated VS Code window when the rollout notice or editor requests it. Use only the qualified runtime; Local, Agent Host, terminal CLI, and remote windows do not have interchangeable telemetry paths.
+4. If support requests a validation task, use a harmless disposable sample. Support verifies native provenance and stored-data delivery; an enabled setting or healthy process alone does not prove success.
 
-Copilot sends telemetry to an endpoint but does not authenticate itself to it. A token placed in VS Code settings or environment variables would expire within about an hour, and other tools, including agent tool processes, could read it. The forwarder renews tokens through Azure CLI and keeps them out of VS Code entirely. Because it also filters, your organization's collector never receives the fields the data contract excludes.
-
-## What is sent
-
-Operation types (agent run, model call, tool call), model and tool names, token counts, durations, error categories, feedback ratings, edit accept or reject outcomes, and the cohort label you choose. Names that look like free text, paths, URLs, or email addresses are replaced with `redacted`.
-
-Not sent: prompts, responses, code, file paths, repository or branch names, your account name, or your machine name. The [data contract](data-contract.md) has the complete lists.
-
-## Before you start
-
-- Windows with [PowerShell 7.2 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows) (`pwsh`).
-- VS Code with GitHub Copilot, with VS Code telemetry not turned off (`telemetry.telemetryLevel` is not `off`). Copilot exports nothing while it is off, and the script does not change that setting.
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows), signed in with your work account: `az login`.
-- A copy of this repository.
-- From your administrator: the collector **endpoint**, the ingestion **scope**, and confirmation that you have been **assigned** to the pilot. Assignment means the administrator added you to the sign-in application that issues ingestion tokens; without it, Install stops with error `AADSTS50105`.
-- A network path to the collector, which has only a private address. Your administrator can tell you whether your machine qualifies; Dev Boxes on the pilot's network do.
-
-## Install
-
-From the repository root, in PowerShell 7:
-
-```powershell
-./scripts/setup-client.ps1 Install -Endpoint <endpoint> -Scope <scope> -Cohort <team-name>
-```
-
-`-Cohort` is optional. It labels your telemetry with a group, such as your team, so results can be compared between groups. Use a short label such as `team-a`, never a personal name. Add `-WhatIf` to preview the changes without making them.
-
-The script checks that Azure CLI can get a token, downloads and verifies the collector, adds the settings block, and starts the forwarder:
-
-```text
-Setting up Copilot Insights (forwarder)
-  Azure CLI can get an ingestion token.
-  Installed OpenTelemetry Collector 0.161.0 (checksum verified).
-  Added the settings block to C:\Users\<you>\AppData\Roaming\Code\User\settings.json.
-  Forwarder running on 127.0.0.1:4319.
-```
-
-Then reload every VS Code window (Command Palette: **Developer: Reload Window**). Copilot reads these settings only when a window starts.
-
-> [!IMPORTANT]
-> The forwarder does not start automatically after you restart or sign in to Windows again; automatic start is not implemented yet. Run `./scripts/setup-client.ps1 Start` each time. Until you do, Copilot works normally but sends nothing.
-
-## Check that it works
-
-```powershell
-./scripts/setup-client.ps1 Status
-```
-
-When everything is in place, Status ends with `Ready`:
-
-```text
-Copilot Insights client status
-  Mode:                forwarder on 127.0.0.1:4319 -> https://<endpoint>
-  VS Code settings:    block present in C:\Users\<you>\AppData\Roaming\Code\User\settings.json (endpoint http://127.0.0.1:4319)
-  VS Code telemetry:   on
-  Env overrides:       none
-  Policy values:       none found
-  Forwarder:           running (process 12345)
-  Ingestion token:     available from Azure CLI
-  Recent forwarder:    no warnings or errors
-
-Ready. Telemetry from reloaded VS Code windows can flow.
-```
-
-Otherwise it lists what needs attention and exits with code 1.
+You should not need Docker, Azure CLI, repository files, collector configuration, or a daily startup command for this managed flow. The production package must implement its approved enrollment and token lifecycle before deployment; do not paste a token into settings or a support message.
 
 ## Day to day
 
-- **After a restart or a new Windows sign-in**, run `./scripts/setup-client.ps1 Start`.
-- **To pause**, run `Stop`. Copilot keeps working normally, and nothing leaves your machine until you run `Start` again.
-- **If the forwarder is not running**, Copilot is not affected; its telemetry export simply fails in the background.
+- Use Copilot normally within the approved collection scope. Inference requests and model selection are separate from the telemetry forwarder.
+- Updates, startup after sign-in/reboot, and safe health remediation are managed centrally. A telemetry failure must not block development.
+- Request a pause, opt-out, or removal through the support process in your collection notice. Administrators change Intune assignments/policy and remove only deployment-owned components.
+- Existing disabled telemetry and applicable policy restrictions must be respected. Do not delete settings, remove policy, or change environment variables to bypass them.
+- Removing the client does not remove already-collected records. Ask the service owner about retention and deletion.
 
-## Remove
+## What is collected
+
+The intended data is usage metadata: operation/tool names, models, token counts, timings, error categories, supported feedback, and approved group labels. Content and identity capture remain off in the planned baseline. The filters exclude known content, identity, repository, and path fields, but still have [validation gaps](architecture.md#processing-pipeline). This preview is not a universal sensitive-data filter or an individual productivity score.
+
+The [local portal](analytics.md) composes span-based aggregates and human-review signals. Its review decisions are not Copilot thumbs-up/down events. Authenticated shared analytics and an Azure query adapter are separate, unimplemented production work.
+
+## Local development and administrator diagnostics
+
+Manual scripts are for **opt-in local tests or controlled administrator diagnostics only**, not employee onboarding. Run them from the repository using PowerShell 7.2+.
+
+For a short local test, deploy first and follow the [full baseline/action/observe walkthrough](../README.md#optional-connect-vs-code):
 
 ```powershell
-./scripts/setup-client.ps1 Uninstall
+./scripts/setup-client.ps1 Install -Local -Temporary
+./scripts/setup-client.ps1 Status
 ```
 
-This stops the forwarder, removes the settings block, and deletes `%LOCALAPPDATA%\CopilotInsights`. Reload VS Code windows afterwards.
+After observing the native task, restore settings **even if the test fails**, then close or reload the test window:
+
+```powershell
+./scripts/restore-client.ps1
+```
+
+Temporary setup can replace existing user OTel preferences, but never a managed Copilot Insights installation, disabled VS Code telemetry, or conflicting policy/routing overrides. It temporarily serializes the settings object and removes existing exporter-specific preferences, including headers. It saves the original bytes in a sensitive full-settings snapshot outside the repository, under `%LOCALAPPDATA%\CopilotInsights` by default. Restoration preserves the original comments, formatting, encoding, and values byte for byte, then deletes the snapshot.
+
+Do not edit user settings during the test. Restore checks the file hash and refuses to overwrite concurrent edits; retain the local snapshot, save/reconcile those edits locally, then retry and reapply them after restoration. Never publish the snapshot. `-SettingsPath` and `-InstallRoot` support a designated test profile; keep the install root outside source control. Both scripts support `-WhatIf`.
+
+The non-temporary diagnostic setup still supports `Install`, `Start`, `Stop`, `Status`, and `Uninstall`. Its remote mode requires the administrator's approved endpoint/scope and an existing Azure CLI sign-in, and still needs manual startup. Use `setup-client.ps1 Uninstall` to remove that ordinary marked-block installation; `restore-client.ps1` is specifically for `Install -Local -Temporary`. Neither is an implemented Intune installer or fleet removal path.
 
 ## Troubleshooting
 
-| Message or symptom | What to do |
+| Symptom | Next step |
 |---|---|
-| `Azure CLI could not get a token ... AADSTS50105` | You are not assigned to the ingestion app. Ask your administrator to add you. |
-| `Azure CLI could not get a token ... AADSTS65001` | Azure CLI is not authorized for the ingestion app. Your administrator needs to pre-authorize it (see [Infrastructure](infrastructure.md#register-the-ingestion-api)). |
-| `Azure CLI could not get a token ... az login` | Your Azure CLI session expired. Run `az login`. |
-| `Your VS Code settings already configure Copilot OpenTelemetry` | You already have `github.copilot.chat.otel.*` settings of your own. Remove them, or keep your configuration and skip the pilot. |
-| `VS Code telemetry is turned off` | `telemetry.telemetryLevel` is `off`, and Copilot exports nothing while it is off. Copilot Insights respects that choice and does not change it. |
-| Status lists **Env overrides** | Variables such as `OTEL_EXPORTER_OTLP_ENDPOINT` or `COPILOT_OTEL_*` take precedence over settings and can send telemetry elsewhere. Remove them from your user environment, then restart VS Code. |
-| Status lists **Policy values** | Your organization manages VS Code or Copilot telemetry through policy, which wins over personal settings. Ask your administrator. |
-| Status shows **Forwarder: not running** | Run `./scripts/setup-client.ps1 Start`. If it fails, the error names the log file. |
-| Forwarder log shows `401` | The collector rejected the token. Check with your administrator that the scope is right and you are assigned to the app. |
-| Forwarder log shows connection or DNS errors | Your machine cannot reach the collector. The endpoint must resolve to a private address from a connected network. |
-| `The forwarder did not start within 90 seconds` | Another program may be using port 4319 or 13134. The log file named in the message has the details. |
+| Managed package is missing or unhealthy | Contact endpoint support with device deployment status; administrators check Intune detection/remediation, not an employee-run setup command |
+| Authentication or HTTP `401` errors | Send the error code to support; identity owners verify enrollment, token lifecycle, issuer/audience and authorization |
+| VS Code telemetry is off, or policy/environment conflicts are reported | Leave restrictions in place; support checks effective values using Developer: Policy Diagnostics |
+| Connection or DNS errors | Use the approved network; service owners check private connectivity and DNS |
+| Local test has no new portal activity | Check Local collector, refresh, the test window's Local harness/reload, native service version, and collector health; do not substitute fixture success for native proof |
+| Restore reports concurrent settings edits | Keep the private snapshot and reconcile edits locally; there is deliberately no force-overwrite option |
 
-## Questions
-
-**Does this slow Copilot down?** Copilot exports telemetry in the background, and the forwarder is limited to 256 MiB of memory. Neither sits between Copilot and its model service.
-
-**Can I see what is sent?** Yes. The forwarder applies the same pipeline as the [local quick start](../README.md#try-it-on-your-machine). Running `Install -Local` with the quick start shows the filtered telemetry in a local dashboard.
-
-**Does it work on macOS or Linux?** `Install -Local` works on any platform with PowerShell 7. The forwarder currently supports Windows only.
+Share reviewed error codes and non-sensitive status only, not access tokens, settings backups, raw telemetry, or full diagnostic logs.

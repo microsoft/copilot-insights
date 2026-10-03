@@ -25,6 +25,30 @@ jobs:
         shell: pwsh
         run: ./scripts/verify.ps1 -TimeoutSeconds 60
 
+      - name: Test analytics counting and review boundaries
+        run: |
+          docker run --rm --network none \
+            --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" \
+            copilot-insights-review:local node --test
+          docker compose -f deploy/local/compose.yaml exec -T insights node --check public/app.js
+
+      - name: Verify collector-to-analytics delivery
+        run: |
+          docker compose -f deploy/local/compose.yaml exec -T insights node --input-type=module -e "
+            import assert from 'node:assert/strict';
+            const response = await fetch('http://127.0.0.1:8080/api/insights?source=local&days=7');
+            assert.equal(response.status, 200);
+            const data = await response.json();
+            assert.equal(data.source, 'local');
+            assert.equal(data.summary.calls, 1);
+            assert.equal(data.summary.agentRuns, 1);
+            assert.equal(data.summary.toolCalls, 1);
+            assert.equal(data.summary.totalTokens, 1380);
+            assert.equal(data.summary.errors, 1);
+            assert.equal(JSON.stringify(data).includes('CANARY-'), false);
+            console.log('Collector-to-analytics verification passed.');
+          "
+
       - name: Validate the azure and forwarder profiles
         run: |
           for profile in azure forwarder; do
@@ -42,7 +66,7 @@ jobs:
 
       - name: Collector logs
         if: failure()
-        run: docker compose -f deploy/local/compose.yaml logs collector
+        run: docker compose -f deploy/local/compose.yaml logs collector insights
 
       - name: Stop the local quick start
         if: always()
@@ -63,6 +87,12 @@ jobs:
           "$bicep" lint deploy/azure/main.bicep 2>&1 | tee lint.log
           if grep -q ': Warning ' lint.log; then echo 'Bicep lint reported warnings.'; exit 1; fi
 
+      - name: Check the Deploy to Azure template
+        shell: pwsh
+        run: |
+          ./scripts/export-azure-template.ps1 -Check
+          ./scripts/tests/azure-template.tests.ps1
+
   client:
     name: Client setup script
     runs-on: windows-latest
@@ -72,3 +102,19 @@ jobs:
       - name: Test setup-client.ps1
         shell: pwsh
         run: ./scripts/tests/setup-client.tests.ps1
+
+      - name: Test the telemetry file reader
+        shell: pwsh
+        run: ./scripts/tests/telemetry.tests.ps1
+
+      - name: Test the verification signal contract
+        shell: pwsh
+        run: ./scripts/tests/fixture-contract.tests.ps1
+
+      - name: Test remote verification tenant and transport guards
+        shell: pwsh
+        run: ./scripts/tests/remote-verify.tests.ps1
+
+      - name: Test development certificates without changing trust
+        shell: pwsh
+        run: ./scripts/tests/certificate.tests.ps1

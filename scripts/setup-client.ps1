@@ -4,6 +4,9 @@
 Connects VS Code on this machine to Copilot Insights, shows its status, or removes it again.
 
 .DESCRIPTION
+For local development and controlled administrator diagnostics. Organization production deployment uses Intune;
+this script is not an employee onboarding package or an unattended production credential solution.
+
 Install adds one clearly marked block of GitHub Copilot OpenTelemetry settings to your VS Code user settings and
 changes nothing else in that file. Uninstall removes exactly that block. Content and identity capture stay off.
 
@@ -20,8 +23,11 @@ Actions:
   Stop       Stop the forwarder. Nothing leaves the machine until you start it again.
   Status     Show the configuration and whether telemetry can flow. Exits with 1 when something needs attention.
   Uninstall  Stop the forwarder, remove the settings block, and delete the files this script installed.
+  Restore    Restore the private snapshot from Install -Local -Temporary, preserving original settings bytes.
 
-Reload VS Code windows after Install and Uninstall. Every action supports -WhatIf.
+Install -Local -Temporary permits an existing user OTel configuration for a short local test.
+Restore (or restore-client.ps1) restores the original settings bytes and refuses concurrent edits.
+Reload VS Code windows after Install, Uninstall, and Restore. Every action supports -WhatIf.
 
 .EXAMPLE
 ./scripts/setup-client.ps1 Install -Local
@@ -32,11 +38,12 @@ Reload VS Code windows after Install and Uninstall. Every action supports -WhatI
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Uninstall')]
+    [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Uninstall', 'Restore')]
     [string] $Action,
     [string] $Endpoint,
     [string] $Scope,
     [switch] $Local,
+    [switch] $Temporary,
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')]
     [string] $Cohort,
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')]
@@ -64,14 +71,18 @@ $BlockPattern = '\r?\n[ \t]*/\* >>> copilot-insights.*?/\* <<< copilot-insights 
 if (-not $InstallRoot) {
     $InstallRoot = if ($IsWindows) { Join-Path $env:LOCALAPPDATA 'CopilotInsights' } else { Join-Path $HOME '.local/share/copilot-insights' }
 }
+$InstallRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallRoot)
 $statePath = Join-Path $InstallRoot 'state.json'
+$restorePath = Join-Path $InstallRoot 'local-restore.json'
 $state = if (Test-Path -LiteralPath $statePath) { Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json -AsHashtable } else { $null }
 if (-not $SettingsPath) {
     $SettingsPath = if ($state) { $state.settingsPath }
+    elseif (Test-Path -LiteralPath $restorePath) { (Get-Content -LiteralPath $restorePath -Raw | ConvertFrom-Json -AsHashtable).settingsPath }
     elseif ($IsWindows) { Join-Path $env:APPDATA 'Code/User/settings.json' }
     elseif ($IsMacOS) { Join-Path $HOME 'Library/Application Support/Code/User/settings.json' }
     else { Join-Path ($env:XDG_CONFIG_HOME ?? (Join-Path $HOME '.config')) 'Code/User/settings.json' }
 }
+$SettingsPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SettingsPath)
 $binDir = Join-Path $InstallRoot "bin/$CollectorVersion"
 $exePath = Join-Path $binDir 'otelcol-contrib.exe'
 $configDir = Join-Path $InstallRoot 'config'
@@ -108,7 +119,7 @@ function Read-Settings {
         if ($null -eq $parsed) { $parsed = @{} }
         if ($parsed -isnot [Collections.IDictionary]) { throw "$SettingsPath does not contain a JSON object." }
     }
-    [pscustomobject]@{ Exists = $exists; Text = $text; WithoutBlock = $withoutBlock; HasBlock = $found.Count -eq 1; Bom = $bom; Parsed = $parsed }
+    [pscustomobject]@{ Exists = $exists; Text = $text; WithoutBlock = $withoutBlock; HasBlock = $found.Count -eq 1; Bom = $bom; Parsed = $parsed; Bytes = $(if ($exists) { $bytes } else { [byte[]]@() }) }
 }
 
 function Write-Settings([string] $text, [bool] $bom) {
@@ -146,14 +157,92 @@ function Add-SettingsBlock($settings, [Collections.Specialized.OrderedDictionary
     $text.Insert($at, $block)
 }
 
-function Assert-SettingsAllowInstall($settings) {
+function Assert-SettingsAllowInstall($settings, [bool] $allowExisting = $false) {
     $conflicts = @($settings.Parsed.Keys | Where-Object { $_ -like 'github.copilot.chat.otel.*' })
-    if ($conflicts) {
-        throw "Your VS Code settings already configure Copilot OpenTelemetry ($($conflicts -join ', ')). Remove those settings, or keep your own configuration and do not install Copilot Insights."
+    if ($conflicts -and -not $allowExisting) {
+        throw "Your VS Code settings already configure Copilot OpenTelemetry ($($conflicts -join ', ')). Keep your own configuration, or use Install -Local -Temporary for a reversible local test."
     }
     if ($settings.Parsed['telemetry.telemetryLevel'] -eq 'off' -or $settings.Parsed['telemetry.enableTelemetry'] -eq $false) {
         throw 'VS Code telemetry is turned off in your settings (telemetry.telemetryLevel), and Copilot does not export OpenTelemetry while it is off. Copilot Insights respects that choice, so nothing was changed.'
     }
+}
+
+function Get-BytesHash([byte[]] $bytes) {
+    if ($null -eq $bytes) { $bytes = [byte[]]::new(0) }
+    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$bytes))
+}
+
+function Get-SettingsHash {
+    if (Test-Path -LiteralPath $SettingsPath) { Get-BytesHash ([IO.File]::ReadAllBytes($SettingsPath)) } else { 'missing' }
+}
+
+function Get-TemporarySettings($settings) {
+    $options = [Text.Json.JsonDocumentOptions]::new()
+    $options.AllowTrailingCommas = $true
+    $options.CommentHandling = [Text.Json.JsonCommentHandling]::Skip
+    $options.MaxDepth = 1024
+    $text = if ([string]::IsNullOrWhiteSpace($settings.Text)) { '{}' } else { $settings.Text }
+    $document = [Text.Json.Nodes.JsonNode]::Parse($text, [Text.Json.Nodes.JsonNodeOptions]::new(), $options).AsObject()
+    foreach ($key in @($settings.Parsed.Keys | Where-Object { $_ -like 'github.copilot.chat.otel.*' })) {
+        [void]$document.Remove($key)
+    }
+    $writerOptions = [Text.Json.JsonSerializerOptions]::new()
+    $writerOptions.WriteIndented = $true
+    $writerOptions.MaxDepth = 1024
+    $text = $document.ToJsonString($writerOptions)
+    if ($settings.Text.Contains("`r`n")) { $text = $text.Replace("`n", "`r`n") }
+    [pscustomobject]@{ WithoutBlock = $text; Parsed = ($text | ConvertFrom-Json -AsHashtable); Bom = $settings.Bom }
+}
+
+function Assert-TemporaryEnvironment {
+    $scopes = if ($IsWindows) { 'Process', 'User', 'Machine' } else { , 'Process' }
+    foreach ($scope in $scopes) {
+        $variables = [Environment]::GetEnvironmentVariables($scope)
+        foreach ($name in $variables.Keys) {
+            if ($name -notmatch '^(COPILOT_OTEL_|OTEL_)') { continue }
+            if ($name -eq 'COPILOT_OTEL_EXPORTER_TYPE' -and $variables[$name] -eq 'otlp-http') { continue }
+            if ($name -eq 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT' -and $variables[$name] -eq 'false') { continue }
+            throw "Temporary local setup cannot verify environment override $name ($scope). Nothing was changed. Use a clean test process; do not override organizational configuration."
+        }
+    }
+}
+
+function Invoke-Restore {
+    if (-not (Test-Path -LiteralPath $restorePath)) {
+        Write-Host 'No temporary local settings snapshot exists. Nothing was changed.'
+        return
+    }
+    $snapshot = Get-Content -LiteralPath $restorePath -Raw | ConvertFrom-Json -AsHashtable
+    if ($snapshot.schemaVersion -ne 1 -or [IO.Path]::GetFullPath($SettingsPath) -ne $snapshot.settingsPath) {
+        throw 'The restore snapshot does not match this settings path. Nothing was changed.'
+    }
+    $originalBytes = [Convert]::FromBase64String($snapshot.originalBase64)
+    $originalHash = if ($snapshot.originalExists) { Get-BytesHash $originalBytes } else { 'missing' }
+    if ($originalHash -ne $snapshot.originalSha256) { throw 'The restore snapshot failed its integrity check. Nothing was changed.' }
+    $currentHash = Get-SettingsHash
+    if ($currentHash -ne $snapshot.appliedSha256 -and $currentHash -ne $originalHash) {
+        throw "Settings changed after temporary setup. Refusing to overwrite concurrent edits. The original snapshot remains at $restorePath; reconcile those edits before retrying Restore."
+    }
+    if ($state -and (-not $state.temporary -or [IO.Path]::GetFullPath($state.settingsPath) -ne $snapshot.settingsPath)) {
+        throw 'An unrelated installation now uses this state directory. Nothing was changed.'
+    }
+    if (-not $PSCmdlet.ShouldProcess($SettingsPath, 'Restore the original VS Code settings and remove the temporary snapshot')) { return }
+    if ((Get-SettingsHash) -ne $currentHash) { throw 'Settings changed during restoration. Original snapshot retained.' }
+    if ($currentHash -ne $originalHash) {
+        if ($snapshot.originalExists) {
+            $temporaryPath = "$SettingsPath.copilot-insights.tmp"
+            [IO.File]::WriteAllBytes($temporaryPath, $originalBytes)
+            if ((Get-SettingsHash) -ne $currentHash) { throw 'Settings changed during restoration. Original snapshot retained.' }
+            Move-Item -LiteralPath $temporaryPath -Destination $SettingsPath -Force
+        } else {
+            Remove-Item -LiteralPath $SettingsPath
+        }
+    }
+    if ((Get-SettingsHash) -ne $originalHash) { throw 'Restoration could not be verified. Original snapshot retained.' }
+    if ($state) { Remove-Item -LiteralPath $statePath }
+    Remove-Item -LiteralPath $restorePath
+    if (-not (Get-ChildItem -LiteralPath $InstallRoot -Force)) { Remove-Item -LiteralPath $InstallRoot }
+    Write-Host 'Original VS Code settings restored and verified byte for byte. Reload the test window (or close it) to discard its temporary exporter configuration.'
 }
 
 # ------------------------------------------------------------------ environment checks
@@ -283,6 +372,7 @@ function Stop-Forwarder {
 # ------------------------------------------------------------------ actions
 
 function Invoke-Install {
+    if (Test-Path -LiteralPath $restorePath) { throw 'A temporary local setup is active. Run restore-client.ps1 before installing again.' }
     if ($Local -and ($Endpoint -or $Scope)) { throw 'Use either -Local, or -Endpoint with -Scope.' }
     if (-not $Local -and -not ($Endpoint -and $Scope)) { throw 'Install needs -Local, or the -Endpoint and -Scope values from your administrator.' }
     $mode = if ($Local) { 'local' } else { 'forwarder' }
@@ -301,13 +391,19 @@ function Invoke-Install {
     }
 
     $settings = Read-Settings
-    Assert-SettingsAllowInstall $settings
+    if ($Temporary -and ($state -or $settings.HasBlock)) { throw 'Temporary setup cannot replace an installed Copilot Insights client. Restore or uninstall that installation first.' }
+    Assert-SettingsAllowInstall $settings ([bool]$Temporary)
     if (Get-PolicyTelemetryOff) { throw 'VS Code telemetry is turned off by policy on this machine, so Copilot does not export OpenTelemetry. Nothing was changed.' }
+    if ($Temporary) {
+        if (Get-PolicyHints) { throw 'Telemetry policy is present. Temporary setup will not override managed configuration.' }
+        Assert-TemporaryEnvironment
+    }
     foreach ($hint in Get-PolicyHints) { Write-Warning "Policy value $hint may override these settings. Run Status after setup to confirm." }
     $overrides = Get-EnvironmentOverrides
-    if ($overrides) { Write-Warning "These environment variables override VS Code settings for Copilot: $($overrides -join ', '). Remove them, or telemetry may go elsewhere." }
+    if ($overrides -and $Temporary) { Write-Line "Compatible environment flags checked: $($overrides -join ', '). No environment variables were changed." }
+    elseif ($overrides) { Write-Warning "These environment variables override VS Code settings for Copilot: $($overrides -join ', '). Resolve them with your administrator, or telemetry may go elsewhere." }
 
-    if ($mode -eq 'forwarder') { Install-Forwarder } elseif ((Stop-Forwarder) -gt 0) { Write-Line 'Stopped the previously configured forwarder.' }
+    if ($mode -eq 'forwarder') { Install-Forwarder } elseif (-not $Temporary -and (Stop-Forwarder) -gt 0) { Write-Line 'Stopped the previously configured forwarder.' }
 
     $ringValue = if ($Ring) { $Ring } elseif ($Local) { 'local' } else { 'pilot' }
     $attributes = [ordered]@{ 'copilot_insights.config.version' = $ConfigVersion; 'copilot_insights.rollout.ring' = $ringValue }
@@ -321,23 +417,49 @@ function Invoke-Install {
         'github.copilot.chat.otel.captureIdentity'    = $false
         'github.copilot.chat.otel.resourceAttributes' = $attributes
     }
-    $newText = Add-SettingsBlock $settings $values
+    $preparedSettings = if ($Temporary) { Get-TemporarySettings $settings } else { $settings }
+    $newText = Add-SettingsBlock $preparedSettings $values
+    [byte[]]$originalBytes = $settings.Bytes ?? [byte[]]::new(0)
+    $originalHash = if ($settings.Exists) { Get-BytesHash $originalBytes } else { 'missing' }
+    $encoding = [Text.UTF8Encoding]::new($settings.Bom)
+    $expectedBytes = [byte[]]($encoding.GetPreamble() + $encoding.GetBytes($newText))
+    $appliedHash = Get-BytesHash $expectedBytes
     if ($PSCmdlet.ShouldProcess($SettingsPath, 'Add the Copilot Insights settings block')) {
         New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-        if ($settings.Exists) {
+        if ($Temporary) {
+            $snapshot = [ordered]@{
+                schemaVersion = 1
+                settingsPath = [IO.Path]::GetFullPath($SettingsPath)
+                originalExists = $settings.Exists
+                originalBase64 = [Convert]::ToBase64String($originalBytes)
+                originalSha256 = $originalHash
+                appliedSha256 = $appliedHash
+            }
+            [IO.File]::WriteAllText($restorePath, ($snapshot | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        } elseif ($settings.Exists) {
             $backups = Join-Path $InstallRoot 'backups'
             New-Item -ItemType Directory -Path $backups -Force | Out-Null
             Copy-Item -LiteralPath $SettingsPath -Destination (Join-Path $backups ('settings-{0:yyyyMMdd-HHmmss}.json' -f (Get-Date)))
         }
-        Write-Settings $newText $settings.Bom
-        $check = Read-Settings
-        if (-not $check.HasBlock -or $check.Parsed.Count -ne $settings.Parsed.Count -or ($newText | ConvertFrom-Json -AsHashtable)['github.copilot.chat.otel.otlpEndpoint'] -ne $clientEndpoint) {
-            if ($settings.Exists) { Write-Settings $settings.Text $settings.Bom } else { Remove-Item -LiteralPath $SettingsPath }
-            throw "Updating $SettingsPath could not be verified, so the original file was restored."
+        $settingsWritten = $false
+        try {
+            if ((Get-SettingsHash) -ne $originalHash) { throw 'Settings changed during setup. Refusing to overwrite concurrent edits.' }
+            Write-Settings $newText $settings.Bom
+            $settingsWritten = $true
+            $check = Read-Settings
+            if (-not $check.HasBlock -or $check.Parsed.Count -ne $preparedSettings.Parsed.Count -or ($newText | ConvertFrom-Json -AsHashtable)['github.copilot.chat.otel.otlpEndpoint'] -ne $clientEndpoint) {
+                throw "Updating $SettingsPath could not be verified."
+            }
+            $script:state = [ordered]@{ mode = $mode; endpoint = $Endpoint; scope = $Scope; settingsPath = $SettingsPath; configVersion = $ConfigVersion; collectorVersion = $CollectorVersion; temporary = [bool]$Temporary }
+            Set-Content -LiteralPath $statePath -Value ($script:state | ConvertTo-Json)
+        } catch {
+            if ($Temporary) { Invoke-Restore }
+            elseif ($settingsWritten -and (Get-SettingsHash) -eq $appliedHash) {
+                if ($settings.Exists) { Write-Settings $settings.Text $settings.Bom } else { Remove-Item -LiteralPath $SettingsPath }
+            }
+            throw
         }
         Write-Line "Added the settings block to $SettingsPath."
-        $script:state = [ordered]@{ mode = $mode; endpoint = $Endpoint; scope = $Scope; settingsPath = $SettingsPath; configVersion = $ConfigVersion; collectorVersion = $CollectorVersion }
-        Set-Content -LiteralPath $statePath -Value ($script:state | ConvertTo-Json)
     }
 
     if ($WhatIfPreference) { return }
@@ -349,6 +471,7 @@ function Invoke-Install {
     Write-Host 'Next:'
     Write-Host '  1. Reload VS Code windows (Command Palette: Developer: Reload Window).'
     Write-Host '  2. Use Copilot agent chat, then run: ./scripts/setup-client.ps1 Status'
+    if ($Temporary) { Write-Host '  3. Finish the local test with: ./scripts/restore-client.ps1. Do not edit user settings during the test.' }
     if (-not $Local) { Write-Host '  After you restart or sign in to Windows again, run: ./scripts/setup-client.ps1 Start' }
 }
 
@@ -375,7 +498,10 @@ function Invoke-Status {
     if ($telemetryOff) { $problems.Add('VS Code telemetry is off, so Copilot sends nothing.') }
     $overrides = Get-EnvironmentOverrides
     Write-Line ('Env overrides:       ' + $(if ($overrides) { $overrides -join ', ' } else { 'none' }))
-    if ($overrides) { $problems.Add("Environment variables override VS Code settings: $($overrides -join ', ').") }
+    if ($overrides -and $state.temporary) {
+        try { Assert-TemporaryEnvironment; Write-Line 'Temporary setup:    environment flags are compatible with local export and content capture off.' }
+        catch { $problems.Add($_.Exception.Message) }
+    } elseif ($overrides) { $problems.Add("Environment variables override VS Code settings: $($overrides -join ', ').") }
     $hints = Get-PolicyHints
     Write-Line ('Policy values:       ' + $(if ($hints) { $hints -join ', ' } else { 'none found' }))
     if ($hints) { $problems.Add('Enterprise policy may override these settings.') }
@@ -409,6 +535,7 @@ function Invoke-Status {
 }
 
 function Invoke-Uninstall {
+    if (Test-Path -LiteralPath $restorePath) { Invoke-Restore; return }
     Write-Host 'Removing Copilot Insights'
     $stopped = Stop-Forwarder
     if ($stopped) { Write-Line 'Stopped the forwarder.' }
@@ -418,7 +545,9 @@ function Invoke-Uninstall {
         Write-Line "Removed the settings block from $SettingsPath."
     }
     foreach ($name in 'bin', 'config', 'logs', 'backups', 'state.json') {
-        $path = Join-Path $InstallRoot $name
+        $rootPath = [IO.Path]::GetFullPath($InstallRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $path = [IO.Path]::GetFullPath((Join-Path $InstallRoot $name))
+        if (-not $path.StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to delete a path outside the installation directory.' }
         if ((Test-Path -LiteralPath $path) -and $PSCmdlet.ShouldProcess($path, 'Delete')) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
     if ((Test-Path -LiteralPath $InstallRoot) -and -not (Get-ChildItem -LiteralPath $InstallRoot -Force) -and $PSCmdlet.ShouldProcess($InstallRoot, 'Delete')) {
@@ -427,10 +556,13 @@ function Invoke-Uninstall {
     Write-Host 'Done. Reload VS Code windows so Copilot stops exporting.'
 }
 
+if ($Temporary -and ($Action -ne 'Install' -or -not $Local)) { throw '-Temporary is supported only with Install -Local.' }
+
 switch ($Action) {
     'Install' { Invoke-Install }
     'Start' { Start-Forwarder }
     'Stop' { $count = Stop-Forwarder; Write-Line $(if ($count) { 'Stopped the forwarder.' } else { 'The forwarder was not running.' }) }
     'Status' { Invoke-Status }
     'Uninstall' { Invoke-Uninstall }
+    'Restore' { Invoke-Restore }
 }

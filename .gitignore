@@ -434,6 +434,8 @@ FodyWeavers.xsd
 *.key
 *.pfx
 *.p12
+*.dpapi
+*.parameters.private.json
 *.token
 *.jsonl
 *.db

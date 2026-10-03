@@ -1,0 +1,915 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.47.16.16243",
+      "templateHash": "3116159948605121012"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Region for all regional resources."
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "ci",
+      "minLength": 2,
+      "maxLength": 10,
+      "metadata": {
+        "description": "Lowercase letters and digits only; prefixes resource names."
+      }
+    },
+    "organizationId": {
+      "type": "string",
+      "metadata": {
+        "description": "Organization label stamped on every record by the collector. Client-supplied values are overwritten."
+      }
+    },
+    "ingestionAudience": {
+      "type": "string",
+      "metadata": {
+        "description": "Application (client) ID of the Entra ID app registration that represents the ingestion API."
+      }
+    },
+    "ingestionTenantId": {
+      "type": "string",
+      "defaultValue": "[tenant().tenantId]",
+      "metadata": {
+        "description": "Tenant that issues ingestion tokens."
+      }
+    },
+    "deployCollector": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Set to false for the first deployment, push the image, then redeploy with true."
+      }
+    },
+    "collectorImage": {
+      "type": "string",
+      "defaultValue": "copilot-insights-collector:0.1.0",
+      "metadata": {
+        "description": "Collector image as repository:tag in the registry this template creates."
+      }
+    },
+    "collectorHostname": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional private DNS hostname for the collector. Supply a matching PFX and password when set."
+      }
+    },
+    "tlsCertificateData": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Base64-encoded PFX for collectorHostname. Supply through a private parameter file, never source control."
+      }
+    },
+    "tlsCertificatePassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Password of the PFX supplied in tlsCertificateData."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.60.0.0/22",
+      "metadata": {
+        "description": "Address space of the dedicated virtual network."
+      }
+    },
+    "environmentSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.60.0.0/24",
+      "metadata": {
+        "description": "Container Apps infrastructure subnet; /27 or larger."
+      }
+    },
+    "privateEndpointSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.60.1.0/24",
+      "metadata": {
+        "description": "Subnet for private endpoints."
+      }
+    },
+    "clientVirtualNetworkIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Peered client networks (for example, the Dev Box network) that must resolve the collector endpoint."
+      }
+    },
+    "allowedClientCidrs": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Client CIDR ranges allowed to call the collector. Empty allows any address in connected networks."
+      }
+    },
+    "registryAllowedIpRanges": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Temporary public IP ranges allowed to push images. Empty keeps the registry private-only."
+      }
+    },
+    "queryPublicNetworkAccess": {
+      "type": "string",
+      "defaultValue": "Enabled",
+      "allowedValues": [
+        "Enabled",
+        "Disabled"
+      ],
+      "metadata": {
+        "description": "Whether Log Analytics and Application Insights accept queries from public networks."
+      }
+    },
+    "usageRetentionInDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 30,
+      "maxValue": 730,
+      "metadata": {
+        "description": "Retention for collected usage telemetry, in days."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 3,
+      "minValue": 1
+    }
+  },
+  "variables": {
+    "prefix": "[toLower(parameters('namePrefix'))]",
+    "vnetName": "[format('{0}-vnet', variables('prefix'))]",
+    "environmentSubnetName": "snet-container-apps",
+    "privateEndpointSubnetName": "snet-private-endpoints",
+    "collectorAppName": "[format('{0}-collector', variables('prefix'))]",
+    "registryName": "[format('{0}cr{1}', variables('prefix'), uniqueString(resourceGroup().id))]",
+    "monitorDnsZoneNames": [
+      "privatelink.monitor.azure.com",
+      "privatelink.oms.opinsights.azure.com",
+      "privatelink.ods.opinsights.azure.com",
+      "privatelink.agentsvc.azure-automation.net",
+      "[format('privatelink.blob.{0}', environment().suffixes.storage)]"
+    ],
+    "registryDnsZoneName": "[format('privatelink{0}', environment().suffixes.acrLoginServer)]",
+    "privateDnsZoneNames": "[concat(variables('monitorDnsZoneNames'), createArray(variables('registryDnsZoneName')))]",
+    "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "monitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb",
+    "environmentSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('environmentSubnetName'))]",
+    "privateEndpointSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('environmentSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('environmentSubnetPrefix')]",
+              "delegations": [
+                {
+                  "name": "container-apps",
+                  "properties": {
+                    "serviceName": "Microsoft.App/environments"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('privateEndpointSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
+              "privateEndpointNetworkPolicies": "Disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "copy": {
+        "name": "privateDnsZones",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[variables('privateDnsZoneNames')[copyIndex()]]",
+      "location": "global"
+    },
+    {
+      "copy": {
+        "name": "privateDnsZoneLinks",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', variables('privateDnsZoneNames')[copyIndex()], format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[copyIndex()])]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-usage-law', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": "[parameters('usageRetentionInDays')]",
+        "publicNetworkAccessForIngestion": "Disabled",
+        "publicNetworkAccessForQuery": "[parameters('queryPublicNetworkAccess')]",
+        "features": {
+          "disableLocalAuth": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('{0}-appi', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "kind": "other",
+      "properties": {
+        "Application_Type": "other",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]",
+        "IngestionMode": "LogAnalytics",
+        "DisableLocalAuth": true,
+        "publicNetworkAccessForIngestion": "Disabled",
+        "publicNetworkAccessForQuery": "[parameters('queryPublicNetworkAccess')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-ops-law', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "microsoft.insights/privateLinkScopes",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}-ampls', variables('prefix'))]",
+      "location": "global",
+      "properties": {
+        "accessModeSettings": {
+          "ingestionAccessMode": "Open",
+          "queryAccessMode": "Open"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}/{1}', format('{0}-ampls', variables('prefix')), 'usage-workspace')]",
+      "properties": {
+        "linkedResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]"
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('{0}-ampls', variables('prefix')))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}/{1}', format('{0}-ampls', variables('prefix')), 'app-insights')]",
+      "properties": {
+        "linkedResourceId": "[resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix')))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix')))]",
+        "[resourceId('microsoft.insights/privateLinkScopes', format('{0}-ampls', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}/{1}', format('{0}-ampls', variables('prefix')), 'operations-workspace')]",
+      "properties": {
+        "linkedResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-ops-law', variables('prefix')))]"
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('{0}-ampls', variables('prefix')))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-ops-law', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-ampls-pe', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[variables('privateEndpointSubnetId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "azure-monitor",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('microsoft.insights/privateLinkScopes', format('{0}-ampls', variables('prefix')))]",
+              "groupIds": [
+                "azuremonitor"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('{0}-ampls', variables('prefix')))]",
+        "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('{0}-ampls', variables('prefix')), 'app-insights')]",
+        "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('{0}-ampls', variables('prefix')), 'operations-workspace')]",
+        "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('{0}-ampls', variables('prefix')), 'usage-workspace')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-ampls-pe', variables('prefix')), 'default')]",
+      "properties": {
+        "copy": [
+          {
+            "name": "privateDnsZoneConfigs",
+            "count": "[length(variables('monitorDnsZoneNames'))]",
+            "input": {
+              "name": "[replace(variables('monitorDnsZoneNames')[copyIndex('privateDnsZoneConfigs')], '.', '-')]",
+              "properties": {
+                "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[copyIndex('privateDnsZoneConfigs')])]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-ampls-pe', variables('prefix')))]",
+        "privateDnsZones"
+      ]
+    },
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('registryName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Premium"
+      },
+      "properties": {
+        "adminUserEnabled": false,
+        "publicNetworkAccess": "[if(empty(parameters('registryAllowedIpRanges')), 'Disabled', 'Enabled')]",
+        "networkRuleBypassOptions": "AzureServices",
+        "networkRuleSet": {
+          "copy": [
+            {
+              "name": "ipRules",
+              "count": "[length(parameters('registryAllowedIpRanges'))]",
+              "input": {
+                "action": "Allow",
+                "value": "[parameters('registryAllowedIpRanges')[copyIndex('ipRules')]]"
+              }
+            }
+          ],
+          "defaultAction": "Deny"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-acr-pe', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[variables('privateEndpointSubnetId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "registry",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+              "groupIds": [
+                "registry"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-acr-pe', variables('prefix')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[replace(variables('registryDnsZoneName'), '.', '-')]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[length(variables('monitorDnsZoneNames'))])]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[length(variables('monitorDnsZoneNames'))])]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-acr-pe', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-collector-id', variables('prefix'))]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix')))]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix')))]",
+      "name": "[guid(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('monitoringMetricsPublisherRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('monitoringMetricsPublisherRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix')))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-aca-env', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "vnetConfiguration": {
+          "internal": true,
+          "infrastructureSubnetId": "[variables('environmentSubnetId')]"
+        },
+        "workloadProfiles": [
+          {
+            "name": "Consumption",
+            "workloadProfileType": "Consumption"
+          }
+        ],
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-ops-law', variables('prefix'))), '2023-09-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-ops-law', variables('prefix'))), '2023-09-01').primarySharedKey]"
+          }
+        },
+        "zoneRedundant": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-ops-law', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('collectorHostname')))]",
+      "type": "Microsoft.App/managedEnvironments/certificates",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}/{1}', format('{0}-aca-env', variables('prefix')), 'collector-tls')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "value": "[parameters('tlsCertificateData')]",
+        "password": "[parameters('tlsCertificatePassword')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployCollector')]",
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('collectorAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))))]": {}
+        }
+      },
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "copy": [
+              {
+                "name": "ipSecurityRestrictions",
+                "count": "[length(parameters('allowedClientCidrs'))]",
+                "input": {
+                  "name": "[format('client-{0}', copyIndex('ipSecurityRestrictions'))]",
+                  "action": "Allow",
+                  "ipAddressRange": "[parameters('allowedClientCidrs')[copyIndex('ipSecurityRestrictions')]]"
+                }
+              }
+            ],
+            "external": true,
+            "targetPort": 4318,
+            "transport": "http",
+            "allowInsecure": false,
+            "customDomains": "[if(empty(parameters('collectorHostname')), createArray(), createArray(createObject('name', parameters('collectorHostname'), 'bindingType', 'SniEnabled', 'certificateId', resourceId('Microsoft.App/managedEnvironments/certificates', format('{0}-aca-env', variables('prefix')), 'collector-tls'))))]"
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix')))]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "collector",
+              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('collectorImage'))]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              },
+              "env": [
+                {
+                  "name": "CI_ORGANIZATION_ID",
+                  "value": "[parameters('organizationId')]"
+                },
+                {
+                  "name": "CI_OIDC_ISSUER_URL",
+                  "value": "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, parameters('ingestionTenantId'))]"
+                },
+                {
+                  "name": "CI_OIDC_AUDIENCE",
+                  "value": "[parameters('ingestionAudience')]"
+                },
+                {
+                  "name": "AZURE_CLIENT_ID",
+                  "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), '2023-01-31').clientId]"
+                },
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), '2020-02-02').ConnectionString]"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/",
+                    "port": 13133
+                  },
+                  "periodSeconds": 10
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/",
+                    "port": 13133
+                  },
+                  "periodSeconds": 5
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]",
+            "rules": [
+              {
+                "name": "http",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "100"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix')))]",
+        "[resourceId('Microsoft.App/managedEnvironments/certificates', format('{0}-aca-env', variables('prefix')), 'collector-tls')]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix')))]",
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "[resourceId('Microsoft.Resources/deployments', 'collector-environment-dns')]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-ampls-pe', variables('prefix')), 'default')]",
+        "privateDnsZoneLinks",
+        "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-acr-pe', variables('prefix')), 'default')]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('acrPullRoleId')))]",
+        "[extensionResourceId(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('monitoringMetricsPublisherRoleId')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "collector-environment-dns",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "zoneName": {
+            "value": "[reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').defaultDomain]"
+          },
+          "staticIp": {
+            "value": "[reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').staticIp]"
+          },
+          "virtualNetworkIds": {
+            "value": "[concat(createArray(resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))), parameters('clientVirtualNetworkIds'))]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.47.16.16243",
+              "templateHash": "4693849181319395562"
+            }
+          },
+          "parameters": {
+            "zoneName": {
+              "type": "string"
+            },
+            "staticIp": {
+              "type": "string"
+            },
+            "virtualNetworkIds": {
+              "type": "array"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2024-06-01",
+              "name": "[parameters('zoneName')]",
+              "location": "global"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/A",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), '*')]",
+              "properties": {
+                "ttl": 300,
+                "aRecords": [
+                  {
+                    "ipv4Address": "[parameters('staticIp')]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/A",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), '@')]",
+              "properties": {
+                "ttl": 300,
+                "aRecords": [
+                  {
+                    "ipv4Address": "[parameters('staticIp')]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "links",
+                "count": "[length(parameters('virtualNetworkIds'))]"
+              },
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), format('link-{0}', uniqueString(parameters('virtualNetworkIds')[copyIndex()])))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[parameters('virtualNetworkIds')[copyIndex()]]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('collectorHostname')))]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "collector-custom-dns",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "zoneName": {
+            "value": "[parameters('collectorHostname')]"
+          },
+          "staticIp": {
+            "value": "[reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').staticIp]"
+          },
+          "virtualNetworkIds": {
+            "value": "[concat(createArray(resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))), parameters('clientVirtualNetworkIds'))]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.47.16.16243",
+              "templateHash": "4693849181319395562"
+            }
+          },
+          "parameters": {
+            "zoneName": {
+              "type": "string"
+            },
+            "staticIp": {
+              "type": "string"
+            },
+            "virtualNetworkIds": {
+              "type": "array"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2024-06-01",
+              "name": "[parameters('zoneName')]",
+              "location": "global"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/A",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), '*')]",
+              "properties": {
+                "ttl": 300,
+                "aRecords": [
+                  {
+                    "ipv4Address": "[parameters('staticIp')]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/A",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), '@')]",
+              "properties": {
+                "ttl": 300,
+                "aRecords": [
+                  {
+                    "ipv4Address": "[parameters('staticIp')]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "links",
+                "count": "[length(parameters('virtualNetworkIds'))]"
+              },
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', parameters('zoneName'), format('link-{0}', uniqueString(parameters('virtualNetworkIds')[copyIndex()])))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[parameters('virtualNetworkIds')[copyIndex()]]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', parameters('zoneName'))]"
+              ]
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "collectorEndpoint": {
+      "type": "string",
+      "value": "[if(empty(parameters('collectorHostname')), format('https://{0}.{1}', variables('collectorAppName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').defaultDomain), format('https://{0}', parameters('collectorHostname')))]"
+    },
+    "collectorDeployed": {
+      "type": "bool",
+      "value": "[parameters('deployCollector')]"
+    },
+    "containerAppsEnvironmentName": {
+      "type": "string",
+      "value": "[format('{0}-aca-env', variables('prefix'))]"
+    },
+    "environmentStaticIp": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').staticIp]"
+    },
+    "registryLoginServer": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer]"
+    },
+    "registryName": {
+      "type": "string",
+      "value": "[variables('registryName')]"
+    },
+    "usageWorkspaceId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix'))), '2023-09-01').customerId]"
+    },
+    "vnetId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+    }
+  }
+}

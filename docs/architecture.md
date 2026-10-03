@@ -1,6 +1,6 @@
 # Architecture
 
-Status: design with a reference implementation of every component shown below except analytics: the collector and its privacy pipeline, the local quick start, the client setup script and forwarder, and the private Azure deployment ([infrastructure](infrastructure.md)).
+Status: design with reference implementations of the collector and its privacy pipeline, local quick start, client setup script and forwarder, and private Azure deployment ([infrastructure](infrastructure.md)). A [local analytics and human review application](analytics.md) reads the sanitized collector file; the authorized cloud query and shared analytics components shown below remain unimplemented.
 
 ## System boundaries
 
@@ -8,24 +8,27 @@ Copilot Insights observes instrumented agent activity through OpenTelemetry. It 
 
 ```mermaid
 flowchart LR
-    Setup["setup-client.ps1"] -. "Settings block" .-> Editor["VS Code / Copilot"]
+    Management["Intune (production plan)"] -. "Managed policy and lifecycle" .-> Editor["VS Code / Copilot"]
     Editor --> Model["Existing model provider"]
     Editor -. "OTLP over loopback" .-> Forwarder["Forwarder: privacy filter, Entra ID token"]
+    Management -. "Managed package (not yet implemented)" .-> Forwarder
     Forwarder --> Collector["Central collector: token validation, privacy filter"]
     Collector --> Store["Approved observability storage"]
     Store --> Query["Authorized queries"]
-    Query --> View["Aggregate analytics (not started)"]
+    Query --> View["Shared analytics (not implemented)"]
 ```
 
 The forwarder is the same OpenTelemetry Collector as the central service, running with the [forwarder profile](../collector/config/forwarder.yaml) as the participant. It exists because Copilot's native export can neither authenticate itself with renewable credentials nor filter its own metadata. A successful test of one runtime does not establish that every runtime can use the same configuration.
 
 ## Client and forwarder
 
-The first supported client is Windows VS Code using the Local harness (`github.copilot.chat.otel.*` settings). Agent Host, terminal CLI, remote extension hosts, and other operating systems qualify independently. Record exact versions and tested signals.
+The initial qualification target is Windows VS Code using the Local harness. A harmless VS Code 1.140.0 / Copilot Chat 0.68.0 task has verified native traces, metrics, and a feedback event through the local collector and portal ([evidence](local-validation.md#native-client-emission-and-restoration)). Agent Host, terminal CLI, remote extension hosts, other versions, and other operating systems qualify independently.
 
-[setup-client.ps1](../scripts/setup-client.ps1) adds a marked block to the participant's VS Code user settings, preserves everything else, and offers install, start, stop, status, and uninstall ([client setup](client-setup.md)). Cohort and rollout labels travel in the `github.copilot.chat.otel.resourceAttributes` setting. They are configuration labels, not authenticated identity or active-project context.
+Organization production configuration and package lifecycle are owned by **Microsoft Intune**, using Copilot managed telemetry policy, staged assignments, detection/remediation, and central rollback. The [production plan](intune-deployment.md) distinguishes required implementation from the diagnostic reference; the managed package and production authentication lifecycle are not yet implemented.
 
-The forwarder:
+[setup-client.ps1](../scripts/setup-client.ps1) is for local development and controlled administrator diagnostics, not employee onboarding. Ordinary installation adds a removable user-settings block. `Install -Local -Temporary` can override existing user OTel preferences for a local test, saves the original bytes, and pairs with [restore-client.ps1](../scripts/restore-client.ps1); restoration refuses concurrent edits. Cohort/ring attributes are configuration labels, not authenticated identity or active-project context.
+
+The current diagnostic forwarder:
 
 - Binds only to `127.0.0.1`, on a non-default port so other local OTLP senders do not reach it by accident.
 - Applies the shared allow-list and value validation before anything leaves the device.
@@ -55,7 +58,7 @@ An endpoint URL alone provides no client credential. Copilot does not automatica
 | Option | Capability | Assessment |
 |---|---|---|
 | Native explicit headers | Copilot supports a `github.copilot.chat.otel.headers` setting and `OTEL_EXPORTER_OTLP_HEADERS` | A static token expires within about an hour, and settings files and environment variables are readable by other local tools. Not used. |
-| Local authenticated forwarder | A separate process owns upload authentication and filtering | **Implemented for the pilot.** Tokens come from the participant's Azure CLI sign-in. A production release could replace Azure CLI with a dedicated public client and broker sign-in. |
+| Local authenticated forwarder | A separate process owns upload authentication and filtering | **Diagnostic reference implemented.** Tokens come from the executing user's Azure CLI sign-in. An approved managed identity/token lifecycle, such as a dedicated broker-backed client, is an Intune production release gate; `SYSTEM` cannot inherit that user sign-in. |
 | Network restriction alone | Limits where connections can originate | Does not establish individual sender identity and does not satisfy the authenticated-ingestion requirement |
 
 Supplying a bearer header does not implement OAuth or token refresh. A token obtained once at startup eventually expires. Do not reuse a model-provider token for a different audience or distribute one long-lived secret to every participant.
@@ -112,6 +115,8 @@ An in-memory sending queue can lose data on process failure. A secured persisten
 An OTLP success response is not proof that every item is already stored and queryable downstream. Respect partial-success semantics, track drops and export failures, and use a synthetic end-to-end query probe for ingestion delay. Do not promise exactly-once delivery.
 
 ## Query and dashboard boundary
+
+The [local review workspace](analytics.md) is a separate evaluation path: a read-only collector-file projection feeds aggregate views, rule-based findings, and a local review-state volume. It is included in Compose on loopback port 3000; Aspire diagnostics remains on port 18888. It does not query Azure, import private datasets, or implement shared user authorization. Demo examples are generated independently and kept separate from collected records.
 
 An authorized backend queries the selected store and returns aggregates. The browser must not receive storage credentials. Enforce organization/cohort authorization server-side; a filter in the UI is not an access boundary.
 
