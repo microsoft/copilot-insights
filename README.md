@@ -2,7 +2,7 @@
 
 Self-hosted observability for GitHub Copilot agents in VS Code: inspect tool activity, model usage, token counts, and latency using OpenTelemetry.
 
-![Insights overview of the fictional demo organization: agent runs, observed tokens, P95 latency, error rate, daily activity, review signals, model mix, and collection coverage](docs/images/portal-overview.png)
+![Insights overview of the fictional demo organization: filters, agent runs, observed tokens, P95 latency, error rate, daily activity, and review focus](docs/images/portal-overview.png)
 
 **Early preview for evaluation.** Synthetic collector tests and earlier native Windows Local Copilot capture/restore checks pass. The new project companion has automated tests, but native multi-window E2E, live Entra access, fleet, privacy, and end-to-end Azure qualification remain open. There is no public hosted offering or production-ready release. See [validation evidence](docs/local-validation.md) and [Project status](#project-status).
 
