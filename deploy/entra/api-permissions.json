@@ -1,0 +1,45 @@
+{
+  "signInAudience": "AzureADMyOrg",
+  "api": {
+    "requestedAccessTokenVersion": 2,
+    "oauth2PermissionScopes": [
+      {
+        "id": "c9834f0c-922e-4587-84c0-d6e8ecf4da56",
+        "value": "Insights.Read",
+        "type": "Admin",
+        "isEnabled": true,
+        "adminConsentDisplayName": "Access Copilot Insights as an assigned administrator",
+        "adminConsentDescription": "Read insights reports and record human review decisions. The Insights.Admin app role is also required."
+      },
+      {
+        "id": "c791bb53-d5df-442a-9c4e-a8a9089efff6",
+        "value": "Context.Publish",
+        "type": "Admin",
+        "isEnabled": true,
+        "adminConsentDisplayName": "Publish this user's window project context",
+        "adminConsentDescription": "Register a native VS Code window and its selected project. Does not permit reading analytics. The Insights.Publisher app role is also required."
+      }
+    ]
+  },
+  "appRoles": [
+    {
+      "id": "8d4e8f6a-e273-4e7a-bd54-cb8d1f1f8e93",
+      "value": "Insights.Admin",
+      "displayName": "Insights administrator",
+      "description": "Analyze all project reports in this service organization and record review decisions.",
+      "allowedMemberTypes": ["User", "Application"],
+      "isEnabled": true
+    },
+    {
+      "id": "2445e4b1-0615-42ab-9f28-ef7dbff18624",
+      "value": "Insights.Publisher",
+      "displayName": "Project context publisher",
+      "description": "Register this user's VS Code window context without access to analytics or review decisions.",
+      "allowedMemberTypes": ["User"],
+      "isEnabled": true
+    }
+  ],
+  "optionalClaims": {
+    "accessToken": [{ "name": "idtyp", "source": null, "essential": false, "additionalProperties": [] }]
+  }
+}

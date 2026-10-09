@@ -1,0 +1,33 @@
+{
+  "name": "copilot-insights-project",
+  "displayName": "Copilot Insights Project Context",
+  "description": "Select the project for this VS Code window and attribute its native Copilot telemetry to that project.",
+  "version": "0.1.0",
+  "publisher": "copilot-insights",
+  "license": "MIT",
+  "engines": { "vscode": "^1.100.0" },
+  "categories": ["Other"],
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+  "scripts": { "test": "node --test tests/*.test.cjs" },
+  "contributes": {
+    "commands": [
+      { "command": "copilotInsights.selectProject", "title": "Copilot Insights: Select Project" },
+      { "command": "copilotInsights.clearProject", "title": "Copilot Insights: Clear Project (Unattributed)" },
+      { "command": "copilotInsights.reloadForProject", "title": "Copilot Insights: Reload for Project Change" },
+      { "command": "copilotInsights.publishContext", "title": "Copilot Insights: Register This Window" }
+    ],
+    "configuration": {
+      "title": "Copilot Insights",
+      "properties": {
+        "copilotInsights.endpoint": { "type": "string", "default": "http://127.0.0.1:3000", "scope": "machine", "description": "Insights service origin, not the OTLP endpoint. Local mode requires loopback. Endpoint changes require a window reload." },
+        "copilotInsights.authentication": { "type": "string", "enum": ["local", "entra"], "default": "local", "scope": "machine", "description": "Local evaluation has no authentication. Production requires HTTPS and an Entra Insights.Publisher assignment." },
+        "copilotInsights.tenantId": { "type": "string", "default": "", "scope": "machine", "description": "Production Entra tenant GUID. Never read from the workspace project file." },
+        "copilotInsights.clientId": { "type": "string", "default": "", "scope": "machine", "description": "Entra public-client app registration authorized for the Context.Publish delegated permission." },
+        "copilotInsights.apiAudience": { "type": "string", "default": "", "scope": "machine", "description": "Insights API app registration client ID, not the portal client ID." }
+      }
+    }
+  }
+}

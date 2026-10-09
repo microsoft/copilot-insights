@@ -32,6 +32,12 @@ jobs:
             copilot-insights-review:local node --test
           docker compose -f deploy/local/compose.yaml exec -T insights node --check public/app.js
 
+      - name: Test the project companion with an isolated VS Code API
+        run: |
+          docker run --rm --network none \
+            --mount "type=bind,source=$PWD/extensions/project-context,target=/extension,readonly" \
+            --workdir /extension copilot-insights-review:local npm test
+
       - name: Verify collector-to-analytics delivery
         run: |
           docker compose -f deploy/local/compose.yaml exec -T insights node --input-type=module -e "
@@ -118,6 +124,10 @@ jobs:
       - name: Test remote verification tenant and transport guards
         shell: pwsh
         run: ./scripts/tests/remote-verify.tests.ps1
+
+      - name: Test Entra role assignments without tenant access
+        shell: pwsh
+        run: ./scripts/tests/entra-access.tests.ps1
 
       - name: Test development certificates without changing trust
         shell: pwsh

@@ -1,7 +1,10 @@
 FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
 
 WORKDIR /app
-COPY package.json server.mjs ./
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry=$NPM_REGISTRY && npm cache clean --force
+COPY server.mjs ./
 COPY lib/ ./lib/
 COPY public/ ./public/
 RUN mkdir /app/state && chown node:node /app/state

@@ -49,7 +49,10 @@ svg { display: block; }
 .button-quiet:hover { background: #eaf0fa; color: #243047; }
 .button-link { color: var(--brand); background: transparent; padding: 6px 0; }
 .button-link:hover { text-decoration: underline; text-underline-offset: 4px; }
-.filters { display: flex; align-items: flex-end; gap: 28px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: #ffffffb3; }
+.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: #ffffffb3; }
+.project-control { flex: 1; max-width: 360px; }
+.auth-panel { max-width: 620px; margin: 80px auto; padding: 32px; }
+[hidden] { display: none !important; }
 .source-control { min-width: 215px; }
 .source-control label, .time-filter legend { display: block; color: var(--muted); font-size: 11px; font-weight: 600; margin-bottom: 6px; }
 select, input[type="search"] { color: #243047; background: white; border: 1px solid #d8dfeb; border-radius: 6px; min-height: 35px; padding: 6px 10px; }

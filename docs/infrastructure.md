@@ -9,7 +9,7 @@ Status: **validation resources removed; end-to-end cloud ingestion not verified*
 ## Setup sequence
 
 1. Check [prerequisites](#prerequisites), then [register the ingestion app](#register-the-ingestion-api).
-2. [Deploy](#deploy) the private network and storage, push the image, and enable the collector.
+2. [Deploy](#deploy) the private network and storage, push the images, and enable the collector and then the insights portal.
 3. [Verify](#verify) authenticated delivery all the way to storage using synthetic data. A healthy process or HTTP 200 alone is not sufficient.
 4. Build and qualify the Intune-managed client and authentication lifecycle, complete the [pilot gates](rollout-plan.md#acceptance-criteria), then [assign the approved rollout ring](#organization-deployment-with-intune).
 
@@ -19,7 +19,7 @@ The topology and DNS sections below explain the deployment choices; they are not
 
 - **Private by default.** Usage telemetry is still metadata about people's work, so nothing in the path has a public endpoint: not the collector, the registry, or the storage ingestion.
 - **Authenticated, not just reachable.** Network reachability does not identify a sender. The collector accepts only Entra ID tokens issued for your ingestion app, to users you assign.
-- **No shared secrets for telemetry.** The collector uses a managed identity to pull its image and to write to Application Insights, which has local authentication disabled, and participants use their own sign-in. The only key in the template is the operations workspace key that Container Apps needs for platform logs.
+- **No shared secrets for telemetry.** The collector uses a managed identity to pull its image and to write to Application Insights, which has local authentication disabled, and participants use their own sign-in. The portal uses its own managed identity to read the usage workspace. The only keys in the template are the operations workspace key that Container Apps needs for platform logs and the storage account key Container Apps needs to mount the portal's private state share.
 - **Standard parts.** Container Apps, Container Registry, Application Insights, and Log Analytics are standard Azure services, and the collector is the upstream OpenTelemetry Collector image.
 
 ## Topology
@@ -34,14 +34,19 @@ flowchart LR
     subgraph VNet["Collector virtual network"]
         subgraph Env["Internal Container Apps environment"]
             Col["Collector: token validation, privacy pipeline"]
+            Portal["Insights portal and admin MCP: Entra app roles"]
         end
         PEacr["Private endpoint: registry"]
         PEmon["Private endpoint: Azure Monitor"]
+        PEst["Private endpoint: portal state share"]
     end
     Dev -->|"OTLP/HTTPS + Entra token"| Col
+    Dev -->|"Project selection, admin sign-in"| Portal
     Col -->|"Image pull"| PEacr --> ACR["Container Registry, public access off"]
     Col -->|"Managed identity"| PEmon --> AI["Application Insights, public ingestion off"]
     AI --> LAW["Log Analytics: usage"]
+    Portal -->|"Managed identity, read-only queries"| PEmon
+    Portal -->|"Review decisions, window registry"| PEst --> ST["Storage account, public access off"]
     Env -.->|"Platform logs"| OPS["Log Analytics: operations"]
     Col -.->|"Token keys and managed identity tokens"| Entra["Microsoft Entra ID"]
     Dev -->|"Model traffic, unchanged"| Copilot["GitHub Copilot"]
@@ -54,15 +59,17 @@ flowchart LR
 | Virtual network | Container Apps subnet (delegated) and private endpoint subnet | Peer client networks to it |
 | Container Apps environment | Hosts the collector; workload profiles, Consumption profile | Internal: reachable only from connected networks through a static private IP |
 | Container app | Collector image with the `azure` profile; ingress on port 4318, health on 13133 | VNet-scoped ingress, optional client CIDR allow-list |
-| Container Registry (Premium) | Stores the collector image | Private endpoint; public access disabled unless push ranges are allowed |
-| User-assigned managed identity | Pulls the image and authenticates exports | No secrets in configuration |
+| Container app (insights, when `deployInsights = true`) | Portal, project registration, and admin MCP in Entra production mode; queries the usage workspace; one replica | VNet-scoped HTTPS ingress, same client CIDR allow-list |
+| Storage account and file share (with the portal) | Review decisions and the window-to-project registry | Private endpoint; public network access disabled |
+| Container Registry (Premium) | Stores the collector and insights images | Private endpoint; public access disabled unless push ranges are allowed |
+| User-assigned managed identities | Collector: pulls its image and authenticates exports. Portal: pulls its image and queries the usage workspace | No secrets in configuration |
 | Application Insights | Usage ingestion; local authentication disabled | Public ingestion disabled; reached through the private endpoint |
 | Log Analytics (usage) | Durable query store for collected telemetry | Public ingestion disabled; query access configurable |
 | Log Analytics (operations) | Container Apps platform and collector logs | Kept separate from usage telemetry |
 | Azure Monitor Private Link Scope | Private ingestion for the workspaces and Application Insights | Open access mode, so other monitor resources reachable from the network keep working |
-| Private DNS zones | Registry, Azure Monitor, and Container Apps environment names | See [DNS](#dns) |
+| Private DNS zones | Registry, Azure Monitor, file storage, and Container Apps environment names | See [DNS](#dns) |
 
-Role assignments grant the managed identity `AcrPull` on the registry and `Monitoring Metrics Publisher` on Application Insights.
+Role assignments grant the collector identity `AcrPull` on the registry and `Monitoring Metrics Publisher` on Application Insights, and the portal identity `AcrPull` and `Log Analytics Reader` on the usage workspace.
 
 ## Network paths
 
@@ -71,6 +78,9 @@ Role assignments grant the managed identity `AcrPull` on the registry and `Monit
 | Client to collector | Yes | Internal environment static IP, resolved through private DNS |
 | Collector image pull | Yes | Registry private endpoint |
 | Collector to Application Insights | Yes | Azure Monitor private endpoint; the resources reject public ingestion |
+| Clients and administrators to the portal | Yes | Same internal environment static IP and private DNS as the collector |
+| Portal to the usage workspace | Yes | Azure Monitor private endpoint, read-only `Log Analytics Reader` role |
+| Portal to its state share | Yes | File private endpoint; the storage account rejects public access |
 | Collector to Microsoft Entra ID | No | OIDC discovery, signing keys, and managed identity tokens use Entra ID endpoints, which private endpoints do not cover |
 | Platform logs to the operations workspace | Platform-managed | Sent by Container Apps |
 | Queries from the portal or Workbooks | Configurable | `queryPublicNetworkAccess = 'Disabled'` restricts queries to connected networks |
@@ -188,19 +198,26 @@ Share that link with authorized deployment administrators, not as an employee en
 
 3. Peer the client network with the collector network (`vnetId` output). Peering is outside this template because it usually crosses subscriptions or ownership boundaries.
 
-4. Build and push the image from a machine that can reach the registry: a host in a connected network, or one whose public range you temporarily added to `registryAllowedIpRanges` and redeployed.
+4. Build and push the images from a machine that can reach the registry: a host in a connected network, or one whose public range you temporarily added to `registryAllowedIpRanges` and redeployed.
 
    ```powershell
     $outputs = az deployment group show --resource-group '<resource-group>' --name copilot-insights --query properties.outputs -o json | ConvertFrom-Json
    $image = "$($outputs.registryLoginServer.value)/copilot-insights-collector:0.1.0"
+   $insightsImage = "$($outputs.registryLoginServer.value)/copilot-insights-review:0.1.0"
    docker build --tag $image collector
+   docker build --tag $insightsImage apps/insights
    az acr login --name $outputs.registryName.value
    docker push $image
+   docker push $insightsImage
    ```
 
 5. Set `deployCollector = true`, clear any `registryAllowedIpRanges`, and run the deployment command again.
 
-The `collectorDeployed` output distinguishes infrastructure-only from collector-enabled deployments. `collectorEndpoint` is the **intended private address**; it is not a health check. This template does not deploy the local analytics/human-review web app, shared review storage, or a cloud query adapter. Query stored data with Azure Monitor under RBAC; do not present the local portal's file/demo data as Azure data.
+6. Register the portal's API and browser applications as described in [production access](production-access.md#1-register-the-api). Use the `insightsRedirectUri` output as the SPA redirect URI; it is known after the first phase. Set `deployInsights = true`, `insightsApiClientId`, `insightsPortalClientId`, and optionally `organizationName`, then run the deployment command again. Assign administrators `Insights.Admin` and contributors `Insights.Publisher`.
+
+The `collectorDeployed` and `insightsDeployed` outputs distinguish infrastructure-only from enabled deployments. `collectorEndpoint` and `insightsEndpoint` are the **intended private addresses**; they are not health checks. Administrators open `insightsEndpoint` from a connected network and sign in. Point the [project companion](projects.md) at the same origin with `copilotInsights.authentication = entra`.
+
+The portal reads the collector's export from the usage workspace (`AppDependencies`, `AppRequests`, `AppTraces`, `AppMetrics`) through its managed identity, using the [same counting rules](analytics.md#counting-rules-and-limits) as the local file. Results are cached for one minute and limited to the last 32 days. A query that hits a Log Analytics row, size, or time limit fails closed instead of showing partial totals. The mapping is checked against the pinned exporter's documented behavior with tests, but **has not been verified against a live workspace**; repeat the [verification](#verify) and compare the portal totals with the stored rows before relying on them.
 
 ### Development HTTPS certificate
 
@@ -275,6 +292,7 @@ The script requires HTTPS, refuses redirects and wrong-tenant credentials, and d
 - A request without a token receives HTTP 401.
 - The collector endpoint does not resolve or respond from outside connected networks.
 - `ContainerAppConsoleLogs_CL` in the operations workspace shows no repeated export or authentication errors.
+- With the portal enabled, an assigned administrator sees the synthetic spans as **Verification-tagged spans** under **Data quality**, with the same call, tool, and token counts as the stored rows. A user without `Insights.Admin` receives HTTP 403 from the report APIs.
 
 ## Organization deployment with Intune
 
@@ -307,7 +325,7 @@ Keep identity enrollment aligned with managed assignments. Already-issued tokens
 - **Managed clients:** use Intune deployment/health reports and the versioned manifest for promotion, remediation, and rollback; see the [client lifecycle](intune-deployment.md#client-package-and-lifecycle).
 - **Logs:** collector output is in `ContainerAppConsoleLogs_CL` and platform events in `ContainerAppSystemLogs_CL` of the operations workspace.
 - **Delivery:** the export queue is in memory. A replica restart can lose queued batches; add a persistent queue before relying on the data for anything that needs completeness.
-- **Updates:** build and push a new tag, update `collectorImage`, and redeploy. Run the local verification against the new image first.
+- **Updates:** build and push a new tag, update `collectorImage` or `insightsImage`, and redeploy. Run the local verification against the new image first.
 - **Cost drivers:** the Premium registry and private endpoints have standing charges; Container Apps and Log Analytics charges scale with usage and retention.
 - **Removal:** delete the resource group, then the app registration and any peering on the client side.
 

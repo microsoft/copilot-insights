@@ -1,5 +1,5 @@
-// Private copilot-insights deployment: internal Container Apps ingestion, private image pulls, and private
-// Azure Monitor ingestion. See docs/infrastructure.md for prerequisites and the two-phase deployment.
+// Private copilot-insights deployment: internal Container Apps ingestion and insights portal, private image pulls,
+// and private Azure Monitor ingestion and queries. See docs/infrastructure.md for prerequisites and the two-phase deployment.
 targetScope = 'resourceGroup'
 
 @description('Region for all regional resources.')
@@ -24,6 +24,25 @@ param deployCollector bool = false
 
 @description('Collector image as repository:tag in the registry this template creates.')
 param collectorImage string = 'copilot-insights-collector:0.1.0'
+
+@description('Set to true after pushing the insights image and registering its Entra applications (docs/production-access.md).')
+param deployInsights bool = false
+
+@description('Insights portal image as repository:tag in the registry this template creates.')
+param insightsImage string = 'copilot-insights-review:0.1.0'
+
+@description('Organization name shown in the insights portal.')
+@maxLength(64)
+param organizationName string = organizationId
+
+@description('Tenant of the insights API and portal registrations.')
+param insightsTenantId string = tenant().tenantId
+
+@description('Application (client) ID of the insights API registration that defines Insights.Admin and Insights.Publisher.')
+param insightsApiClientId string = ''
+
+@description('Application (client) ID of the insights portal single-page application registration.')
+param insightsPortalClientId string = ''
 
 @description('Optional private DNS hostname for the collector. Supply a matching PFX and password when set.')
 param collectorHostname string = ''
@@ -74,7 +93,9 @@ var vnetName = '${prefix}-vnet'
 var environmentSubnetName = 'snet-container-apps'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 var collectorAppName = '${prefix}-collector'
+var insightsAppName = '${prefix}-insights'
 var registryName = '${prefix}cr${uniqueString(resourceGroup().id)}'
+var stateStorageName = take('${prefix}st${uniqueString(resourceGroup().id)}', 24)
 
 var monitorDnsZoneNames = [
   'privatelink.monitor.azure.com'
@@ -84,10 +105,12 @@ var monitorDnsZoneNames = [
   'privatelink.blob.${environment().suffixes.storage}'
 ]
 var registryDnsZoneName = 'privatelink${environment().suffixes.acrLoginServer}'
-var privateDnsZoneNames = concat(monitorDnsZoneNames, [registryDnsZoneName])
+var fileDnsZoneName = 'privatelink.file.${environment().suffixes.storage}'
+var privateDnsZoneNames = concat(monitorDnsZoneNames, [registryDnsZoneName, fileDnsZoneName])
 
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390055eb'
+var logAnalyticsReaderRoleId = '73c42c96-874c-492b-b04d-ab87d138a893'
 
 // ---------------------------------------------------------------- network
 
@@ -306,6 +329,94 @@ resource telemetryPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
+// Created in the first phase so its role assignments have propagated before the portal starts.
+resource insightsIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${prefix}-insights-id'
+  location: location
+}
+
+resource insightsRegistryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, insightsIdentity.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: insightsIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource insightsUsageReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(usageWorkspace.id, insightsIdentity.id, logAnalyticsReaderRoleId)
+  scope: usageWorkspace
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', logAnalyticsReaderRoleId)
+    principalId: insightsIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ---------------------------------------------------------------- insights state (review decisions, window registry)
+
+resource stateStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployInsights) {
+  name: stateStorageName
+  location: location
+  kind: 'StorageV2'
+  sku: { name: 'Standard_LRS' }
+  properties: {
+    allowBlobPublicAccess: false
+    // Container Apps mounts SMB shares with the account key; it stays inside Azure Resource Manager.
+    allowSharedKeyAccess: true
+    minimumTlsVersion: 'TLS1_2'
+    publicNetworkAccess: 'Disabled'
+    supportsHttpsTrafficOnly: true
+    networkAcls: { defaultAction: 'Deny', bypass: 'None' }
+  }
+}
+
+resource stateFileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = if (deployInsights) {
+  parent: stateStorage
+  name: 'default'
+}
+
+resource stateShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = if (deployInsights) {
+  parent: stateFileService
+  name: 'insights-state'
+  properties: {
+    enabledProtocols: 'SMB'
+    shareQuota: 1
+  }
+}
+
+resource statePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (deployInsights) {
+  name: '${prefix}-st-pe'
+  location: location
+  properties: {
+    subnet: { id: privateEndpointSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'file'
+        properties: {
+          privateLinkServiceId: stateStorage.id
+          groupIds: ['file']
+        }
+      }
+    ]
+  }
+}
+
+resource stateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (deployInsights) {
+  parent: statePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: replace(fileDnsZoneName, '.', '-')
+        properties: { privateDnsZoneId: privateDnsZones[length(monitorDnsZoneNames) + 1].id }
+      }
+    ]
+  }
+}
+
 // ---------------------------------------------------------------- Container Apps
 
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -418,10 +529,97 @@ resource collector 'Microsoft.App/containerApps@2024-03-01' = if (deployCollecto
   dependsOn: [registryPull, telemetryPublisher, registryDnsZoneGroup, monitorDnsZoneGroup, privateDnsZoneLinks, environmentDns]
 }
 
+var insightsOrigin = 'https://${insightsAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+
+resource insightsStateMount 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (deployInsights) {
+  parent: containerAppsEnvironment
+  name: 'insights-state'
+  properties: {
+    azureFile: {
+      accountName: stateStorage.name
+      accountKey: stateStorage!.listKeys().keys[0].value
+      shareName: stateShare.name
+      accessMode: 'ReadWrite'
+    }
+  }
+  dependsOn: [stateDnsZoneGroup]
+}
+
+resource insights 'Microsoft.App/containerApps@2024-03-01' = if (deployInsights) {
+  name: insightsAppName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${insightsIdentity.id}': {} }
+  }
+  properties: {
+    environmentId: containerAppsEnvironment.id
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        // Reachable from connected networks only; the app also requires Entra tokens and app roles.
+        external: true
+        targetPort: 8080
+        transport: 'http'
+        allowInsecure: false
+        ipSecurityRestrictions: [for (cidr, i) in allowedClientCidrs: {
+          name: 'client-${i}'
+          action: 'Allow'
+          ipAddressRange: cidr
+        }]
+      }
+      registries: [{ server: registry.properties.loginServer, identity: insightsIdentity.id }]
+    }
+    template: {
+      containers: [
+        {
+          name: 'insights'
+          image: '${registry.properties.loginServer}/${insightsImage}'
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: [
+            { name: 'INSIGHTS_MODE', value: 'production' }
+            { name: 'INSIGHTS_PUBLIC_ORIGIN', value: insightsOrigin }
+            { name: 'INSIGHTS_ENTRA_TENANT_ID', value: insightsTenantId }
+            { name: 'INSIGHTS_ENTRA_AUDIENCE', value: insightsApiClientId }
+            { name: 'INSIGHTS_ENTRA_CLIENT_ID', value: insightsPortalClientId }
+            { name: 'INSIGHTS_ORGANIZATION_ID', value: organizationId }
+            { name: 'INSIGHTS_ORGANIZATION_NAME', value: organizationName }
+            { name: 'INSIGHTS_LOG_ANALYTICS_WORKSPACE_ID', value: usageWorkspace.properties.customerId }
+            { name: 'AZURE_CLIENT_ID', value: insightsIdentity.properties.clientId }
+            { name: 'INSIGHTS_REVIEW_PATH', value: '/app/state/reviews.json' }
+            { name: 'INSIGHTS_CONTEXT_PATH', value: '/app/state/windows.json' }
+          ]
+          volumeMounts: [{ volumeName: 'state', mountPath: '/app/state' }]
+          // TCP probes: the HTTP health route answers only loopback or the public host name.
+          probes: [
+            { type: 'Liveness', tcpSocket: { port: 8080 }, periodSeconds: 10 }
+            { type: 'Readiness', tcpSocket: { port: 8080 }, periodSeconds: 5 }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'state'
+          storageType: 'AzureFile'
+          storageName: insightsStateMount.name
+          mountOptions: 'uid=1000,gid=1000,dir_mode=0700,file_mode=0600,nobrl'
+        }
+      ]
+      // The review and window stores are single-writer files.
+      scale: { minReplicas: 1, maxReplicas: 1 }
+    }
+  }
+  dependsOn: [insightsRegistryPull, insightsUsageReader, registryDnsZoneGroup, monitorDnsZoneGroup, privateDnsZoneLinks, environmentDns]
+}
+
 output collectorEndpoint string = empty(collectorHostname)
   ? 'https://${collectorAppName}.${containerAppsEnvironment.properties.defaultDomain}'
   : 'https://${collectorHostname}'
 output collectorDeployed bool = deployCollector
+output insightsEndpoint string = insightsOrigin
+output insightsRedirectUri string = '${insightsOrigin}/auth/redirect.html'
+output insightsDeployed bool = deployInsights
 output containerAppsEnvironmentName string = containerAppsEnvironment.name
 output environmentStaticIp string = containerAppsEnvironment.properties.staticIp
 output registryLoginServer string = registry.properties.loginServer

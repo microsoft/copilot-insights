@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.47.16.16243",
-      "templateHash": "3116159948605121012"
+      "templateHash": "2449601206287024740"
     }
   },
   "parameters": {
@@ -56,6 +56,49 @@
       "defaultValue": "copilot-insights-collector:0.1.0",
       "metadata": {
         "description": "Collector image as repository:tag in the registry this template creates."
+      }
+    },
+    "deployInsights": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Set to true after pushing the insights image and registering its Entra applications (docs/production-access.md)."
+      }
+    },
+    "insightsImage": {
+      "type": "string",
+      "defaultValue": "copilot-insights-review:0.1.0",
+      "metadata": {
+        "description": "Insights portal image as repository:tag in the registry this template creates."
+      }
+    },
+    "organizationName": {
+      "type": "string",
+      "defaultValue": "[parameters('organizationId')]",
+      "maxLength": 64,
+      "metadata": {
+        "description": "Organization name shown in the insights portal."
+      }
+    },
+    "insightsTenantId": {
+      "type": "string",
+      "defaultValue": "[tenant().tenantId]",
+      "metadata": {
+        "description": "Tenant of the insights API and portal registrations."
+      }
+    },
+    "insightsApiClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Application (client) ID of the insights API registration that defines Insights.Admin and Insights.Publisher."
+      }
+    },
+    "insightsPortalClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Application (client) ID of the insights portal single-page application registration."
       }
     },
     "collectorHostname": {
@@ -158,7 +201,9 @@
     "environmentSubnetName": "snet-container-apps",
     "privateEndpointSubnetName": "snet-private-endpoints",
     "collectorAppName": "[format('{0}-collector', variables('prefix'))]",
+    "insightsAppName": "[format('{0}-insights', variables('prefix'))]",
     "registryName": "[format('{0}cr{1}', variables('prefix'), uniqueString(resourceGroup().id))]",
+    "stateStorageName": "[take(format('{0}st{1}', variables('prefix'), uniqueString(resourceGroup().id)), 24)]",
     "monitorDnsZoneNames": [
       "privatelink.monitor.azure.com",
       "privatelink.oms.opinsights.azure.com",
@@ -167,9 +212,11 @@
       "[format('privatelink.blob.{0}', environment().suffixes.storage)]"
     ],
     "registryDnsZoneName": "[format('privatelink{0}', environment().suffixes.acrLoginServer)]",
-    "privateDnsZoneNames": "[concat(variables('monitorDnsZoneNames'), createArray(variables('registryDnsZoneName')))]",
+    "fileDnsZoneName": "[format('privatelink.file.{0}', environment().suffixes.storage)]",
+    "privateDnsZoneNames": "[concat(variables('monitorDnsZoneNames'), createArray(variables('registryDnsZoneName'), variables('fileDnsZoneName')))]",
     "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
     "monitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb",
+    "logAnalyticsReaderRoleId": "73c42c96-874c-492b-b04d-ab87d138a893",
     "environmentSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('environmentSubnetName'))]",
     "privateEndpointSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
   },
@@ -496,6 +543,133 @@
       ]
     },
     {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-insights-id', variables('prefix'))]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix')))]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]",
+      "name": "[guid(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), variables('logAnalyticsReaderRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('logAnalyticsReaderRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix')))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('stateStorageName')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "properties": {
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": true,
+        "minimumTlsVersion": "TLS1_2",
+        "publicNetworkAccess": "Disabled",
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "defaultAction": "Deny",
+          "bypass": "None"
+        }
+      }
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stateStorageName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stateStorageName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stateStorageName'), 'default', 'insights-state')]",
+      "properties": {
+        "enabledProtocols": "SMB",
+        "shareQuota": 1
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('stateStorageName'), 'default')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-st-pe', variables('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[variables('privateEndpointSubnetId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "file",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('stateStorageName'))]",
+              "groupIds": [
+                "file"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stateStorageName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-st-pe', variables('prefix')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[replace(variables('fileDnsZoneName'), '.', '-')]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[add(length(variables('monitorDnsZoneNames')), 1)])]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[add(length(variables('monitorDnsZoneNames')), 1)])]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-st-pe', variables('prefix')))]"
+      ]
+    },
+    {
       "type": "Microsoft.App/managedEnvironments",
       "apiVersion": "2024-03-01",
       "name": "[format('{0}-aca-env', variables('prefix'))]",
@@ -660,6 +834,174 @@
         "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-acr-pe', variables('prefix')), 'default')]",
         "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('acrPullRoleId')))]",
         "[extensionResourceId(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Insights/components', format('{0}-appi', variables('prefix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-id', variables('prefix'))), variables('monitoringMetricsPublisherRoleId')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}/{1}', format('{0}-aca-env', variables('prefix')), 'insights-state')]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[variables('stateStorageName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('stateStorageName')), '2023-05-01').keys[0].value]",
+          "shareName": "insights-state",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-st-pe', variables('prefix')), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('stateStorageName'), 'default', 'insights-state')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stateStorageName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployInsights')]",
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('insightsAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))))]": {}
+        }
+      },
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "copy": [
+              {
+                "name": "ipSecurityRestrictions",
+                "count": "[length(parameters('allowedClientCidrs'))]",
+                "input": {
+                  "name": "[format('client-{0}', copyIndex('ipSecurityRestrictions'))]",
+                  "action": "Allow",
+                  "ipAddressRange": "[parameters('allowedClientCidrs')[copyIndex('ipSecurityRestrictions')]]"
+                }
+              }
+            ],
+            "external": true,
+            "targetPort": 8080,
+            "transport": "http",
+            "allowInsecure": false
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix')))]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "insights",
+              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('insightsImage'))]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              },
+              "env": [
+                {
+                  "name": "INSIGHTS_MODE",
+                  "value": "production"
+                },
+                {
+                  "name": "INSIGHTS_PUBLIC_ORIGIN",
+                  "value": "[format('https://{0}.{1}', variables('insightsAppName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').defaultDomain)]"
+                },
+                {
+                  "name": "INSIGHTS_ENTRA_TENANT_ID",
+                  "value": "[parameters('insightsTenantId')]"
+                },
+                {
+                  "name": "INSIGHTS_ENTRA_AUDIENCE",
+                  "value": "[parameters('insightsApiClientId')]"
+                },
+                {
+                  "name": "INSIGHTS_ENTRA_CLIENT_ID",
+                  "value": "[parameters('insightsPortalClientId')]"
+                },
+                {
+                  "name": "INSIGHTS_ORGANIZATION_ID",
+                  "value": "[parameters('organizationId')]"
+                },
+                {
+                  "name": "INSIGHTS_ORGANIZATION_NAME",
+                  "value": "[parameters('organizationName')]"
+                },
+                {
+                  "name": "INSIGHTS_LOG_ANALYTICS_WORKSPACE_ID",
+                  "value": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix'))), '2023-09-01').customerId]"
+                },
+                {
+                  "name": "AZURE_CLIENT_ID",
+                  "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), '2023-01-31').clientId]"
+                },
+                {
+                  "name": "INSIGHTS_REVIEW_PATH",
+                  "value": "/app/state/reviews.json"
+                },
+                {
+                  "name": "INSIGHTS_CONTEXT_PATH",
+                  "value": "/app/state/windows.json"
+                }
+              ],
+              "volumeMounts": [
+                {
+                  "volumeName": "state",
+                  "mountPath": "/app/state"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "periodSeconds": 10
+                },
+                {
+                  "type": "Readiness",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "periodSeconds": 5
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "state",
+              "storageType": "AzureFile",
+              "storageName": "insights-state",
+              "mountOptions": "uid=1000,gid=1000,dir_mode=0700,file_mode=0600,nobrl"
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix')))]",
+        "[resourceId('Microsoft.Resources/deployments', 'collector-environment-dns')]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix')))]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), variables('acrPullRoleId')))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', format('{0}-aca-env', variables('prefix')), 'insights-state')]",
+        "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix'))), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-insights-id', variables('prefix'))), variables('logAnalyticsReaderRoleId')))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-ampls-pe', variables('prefix')), 'default')]",
+        "privateDnsZoneLinks",
+        "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-acr-pe', variables('prefix')), 'default')]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-usage-law', variables('prefix')))]"
       ]
     },
     {
@@ -886,6 +1228,18 @@
     "collectorDeployed": {
       "type": "bool",
       "value": "[parameters('deployCollector')]"
+    },
+    "insightsEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.{1}', variables('insightsAppName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').defaultDomain)]"
+    },
+    "insightsRedirectUri": {
+      "type": "string",
+      "value": "[format('{0}/auth/redirect.html', format('https://{0}.{1}', variables('insightsAppName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', variables('prefix'))), '2024-03-01').defaultDomain))]"
+    },
+    "insightsDeployed": {
+      "type": "bool",
+      "value": "[parameters('deployInsights')]"
     },
     "containerAppsEnvironmentName": {
       "type": "string",

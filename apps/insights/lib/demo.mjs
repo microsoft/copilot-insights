@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeRecords } from './telemetry.mjs';
+import { describeProject } from './context.mjs';
 
 const DAY = 86_400_000;
 const hash = (text, length) => createHash('sha256').update(text).digest('hex').slice(0, length);
@@ -48,5 +49,13 @@ export function demoTelemetry(now = Date.now()) {
     ] },
     scopeSpans: [{ scope: { name: 'copilot-chat' }, spans }],
   }] }];
-  return { ...normalizeRecords(records, 'synthetic-demo'), pendingRecord: false, missing: false };
+  const input = normalizeRecords(records, 'synthetic-demo');
+  const projects = ['sample-alpha', 'sample-beta'];
+  for (const span of input.spans) {
+    const bucket = Number.parseInt(span.traceId.slice(0, 4), 16) % 3;
+    span.sessionId = `demo-window-${bucket}`;
+    span.projectKey = describeProject(input.organizationId, projects[bucket] ?? null).id;
+    span.attribution = bucket < 2 ? 'synthetic-example' : 'unattributed';
+  }
+  return { ...input, projects, pendingRecord: false, missing: false };
 }

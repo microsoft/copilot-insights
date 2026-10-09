@@ -11,6 +11,7 @@ services:
     environment:
       CI_ORGANIZATION_ID: local-vscode
       CI_LOCAL_OUTPUT_PATH: /data/vscode-telemetry.jsonl
+      CI_LOCAL_METRICS_OUTPUT_PATH: /data/vscode-metrics.jsonl
     ports:
       - "127.0.0.1:4318:4318"
       - "127.0.0.1:13133:13133"
@@ -33,6 +34,7 @@ services:
       context: ../../apps/insights
     image: copilot-insights-review:local
     environment:
+      INSIGHTS_MODE: local
       INSIGHTS_ORGANIZATION_ID: local-vscode
       INSIGHTS_ORGANIZATION_NAME: My VS Code organization
     ports:

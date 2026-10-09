@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { AppError } from './errors.mjs';
 
-export const MAX_INPUT_BYTES = 32 * 1024 * 1024;
+export const MAX_INPUT_BYTES = 256 * 1024 * 1024;
+const CHUNK_BYTES = 16 * 1024 * 1024;
+const CHECK_BYTES = 4096;
 export const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
 
 function collection(value) {
@@ -74,6 +76,7 @@ function normalizeSpan(span, resource, scope, organizationId) {
     conversationId: correlationId(attribute(span.attributes, 'gen_ai.conversation.id')),
     toolCallId: correlationId(attribute(span.attributes, 'gen_ai.tool.call.id')),
     operation,
+    startedAt,
     timestamp: endedAt ?? startedAt,
     durationMs: startedAt !== null && endedAt !== null && endedAt >= startedAt ? endedAt - startedAt : null,
     model: operation === 'chat' ? label(attribute(span.attributes, 'gen_ai.request.model')) : null,
@@ -86,11 +89,11 @@ function normalizeSpan(span, resource, scope, organizationId) {
   };
 }
 
-export function normalizeRecords(records, organizationId = 'local-dev') {
-  const spans = new Map();
-  const feedback = new Map();
-  const conflicts = new Set();
-  const quality = { duplicateSpans: 0, conflictingSpans: 0, excludedSpans: 0, metricRecords: 0, logRecords: 0 };
+const emptyState = () => ({ spans: new Map(), feedback: new Map(), conflicts: new Set(),
+  quality: { duplicateSpans: 0, conflictingSpans: 0, excludedSpans: 0, metricRecords: 0, logRecords: 0 } });
+
+export function normalizeRecords(records, organizationId = 'local-dev', state = emptyState()) {
+  const { spans, feedback, conflicts, quality } = state;
   for (const record of records) {
     if (!record || typeof record !== 'object' || Array.isArray(record)) {
       throw new AppError('invalid-telemetry', 'A complete telemetry record has an unsupported shape. No partial totals are shown.');
@@ -143,38 +146,63 @@ export function normalizeRecords(records, organizationId = 'local-dev') {
       }
     }
   }
-  quality.conflictingSpans = conflicts.size;
-  return { organizationId, spans: [...spans.values()], feedback: [...feedback.values()], quality };
+  return { organizationId, spans: [...spans.values()], feedback: [...feedback.values()], quality: { ...quality, conflictingSpans: conflicts.size } };
 }
 
-export async function readTelemetry(path, organizationId = 'local-dev') {
+async function readRange(file, position, length) {
+  const buffer = Buffer.alloc(length);
+  let offset = 0;
+  while (offset < length) {
+    const { bytesRead } = await file.read(buffer, offset, length - offset, position + offset);
+    if (!bytesRead) break;
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
+
+// Parsed state per file and organization, so each request reads only records appended since the last one.
+const readers = new Map();
+const pending = new Map();
+
+async function refresh(path, organizationId, key) {
   let file;
   try {
     file = await open(path, 'r');
-    const { size } = await file.stat();
+    const { size, ino, dev } = await file.stat();
     if (size > MAX_INPUT_BYTES) {
-      throw new AppError('input-too-large', 'The local input exceeds the 32 MiB evaluation limit. Rotate the collector output before continuing.');
+      throw new AppError('input-too-large', 'The local input exceeds the 256 MiB evaluation limit. Archive the collector output before continuing.');
     }
-    const snapshot = Buffer.alloc(size);
-    let offset = 0;
-    while (offset < size) {
-      const { bytesRead } = await file.read(snapshot, offset, size - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
+    let reader = readers.get(key);
+    readers.delete(key);
+    if (!reader || reader.ino !== ino || reader.dev !== dev || size < reader.offset
+      || !(await readRange(file, reader.offset - reader.check.length, reader.check.length)).equals(reader.check)) {
+      reader = { ino, dev, offset: 0, check: Buffer.alloc(0), state: emptyState() };
     }
-    const text = snapshot.subarray(0, offset).toString('utf8').replace(/^\uFEFF/, '');
-    const boundary = text.lastIndexOf('\n');
-    const complete = boundary >= 0 ? text.slice(0, boundary + 1) : '';
-    let records;
-    try {
-      records = complete.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
-    } catch {
-      throw new AppError('invalid-telemetry', 'A complete telemetry record is unreadable. No partial totals are shown.');
+    let length = Math.min(CHUNK_BYTES, size - reader.offset);
+    while (length > 0) {
+      const chunk = await readRange(file, reader.offset, length);
+      const boundary = chunk.lastIndexOf(10);
+      if (boundary < 0) {
+        if (reader.offset + chunk.length >= size) break;
+        length = Math.min(length * 2, size - reader.offset);
+        continue;
+      }
+      let text = chunk.subarray(0, boundary + 1).toString('utf8');
+      if (reader.offset === 0) text = text.replace(/^\uFEFF/, '');
+      let records;
+      try {
+        records = text.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
+      } catch {
+        throw new AppError('invalid-telemetry', 'A complete telemetry record is unreadable. No partial totals are shown.');
+      }
+      try { normalizeRecords(records, organizationId, reader.state); }
+      catch { throw new AppError('invalid-telemetry', 'A complete telemetry record has an unsupported shape. No partial totals are shown.'); }
+      reader.offset += boundary + 1;
+      length = Math.min(CHUNK_BYTES, size - reader.offset);
     }
-    let normalized;
-    try { normalized = normalizeRecords(records, organizationId); }
-    catch { throw new AppError('invalid-telemetry', 'A complete telemetry record has an unsupported shape. No partial totals are shown.'); }
-    return { ...normalized, pendingRecord: boundary < text.length - 1, missing: false };
+    reader.check = await readRange(file, Math.max(0, reader.offset - CHECK_BYTES), Math.min(CHECK_BYTES, reader.offset));
+    readers.set(key, reader);
+    return { ...normalizeRecords([], organizationId, reader.state), pendingRecord: reader.offset < size, missing: false };
   } catch (error) {
     if (error.code === 'ENOENT') return { ...normalizeRecords([], organizationId), pendingRecord: false, missing: true };
     if (error instanceof AppError) throw error;
@@ -182,4 +210,11 @@ export async function readTelemetry(path, organizationId = 'local-dev') {
   } finally {
     await file?.close();
   }
+}
+
+export function readTelemetry(path, organizationId = 'local-dev') {
+  const key = JSON.stringify([path, organizationId]);
+  const result = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(() => refresh(path, organizationId, key));
+  pending.set(key, result);
+  return result;
 }

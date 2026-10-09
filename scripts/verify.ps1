@@ -5,7 +5,7 @@ Sends synthetic Copilot-shaped telemetry to a collector and verifies the privacy
 
 .DESCRIPTION
 Local mode (default) posts traces, metrics, and logs to the quick-start collector, then inspects the
-sanitized output file. The payloads deliberately contain canary values in fields the data contract
+sanitized output files: spans and logs in -OutputPath, metrics in -MetricsPath. The payloads deliberately contain canary values in fields the data contract
 excludes; the check fails if any canary reaches the output.
 
 This script posts OTLP fixtures directly. It never launches VS Code, calls a model, or performs a Copilot
@@ -27,6 +27,7 @@ param(
     [string] $Endpoint = 'http://localhost:4318',
     [string] $HealthEndpoint = 'http://localhost:13133/',
     [string] $OutputPath = (Join-Path $PSScriptRoot '..' 'deploy' 'local' '.data' 'vscode-telemetry.jsonl'),
+    [string] $MetricsPath = (Join-Path $PSScriptRoot '..' 'deploy' 'local' '.data' 'vscode-metrics.jsonl'),
     [string] $ExpectedOrganizationId = 'local-vscode',
     [string] $AccessTokenScope,
     [string] $TenantId,
@@ -334,12 +335,13 @@ do {
     Start-Sleep -Milliseconds 500
     $records = @(& (Join-Path $PSScriptRoot 'read-telemetry.ps1') -Path $OutputPath -ConfigVersion $configVersion)
     $spanBatches = @($records | Where-Object { Get-OptionalProperty $_ 'resourceSpans' })
-    $metricBatches = @($records | Where-Object { Get-OptionalProperty $_ 'resourceMetrics' })
+    $metricBatches = @(& (Join-Path $PSScriptRoot 'read-telemetry.ps1') -Path $MetricsPath -ConfigVersion $configVersion | Where-Object { Get-OptionalProperty $_ 'resourceMetrics' })
     $logBatches = @($records | Where-Object { Get-OptionalProperty $_ 'resourceLogs' })
 } while ((-not $spanBatches -or -not $metricBatches -or -not $logBatches) -and (Get-Date) -lt $deadline)
 
-Assert-True ([bool]$spanBatches -and [bool]$metricBatches -and [bool]$logBatches) "Sanitized traces, metrics, and logs reached $OutputPath"
-Assert-True (-not (Select-String -LiteralPath $OutputPath -SimpleMatch $canary -Quiet)) 'No excluded canary value appears in collector output'
+Assert-True ([bool]$spanBatches -and [bool]$logBatches) "Sanitized traces and logs reached $OutputPath"
+Assert-True ([bool]$metricBatches) "Sanitized metrics reached $MetricsPath"
+Assert-True (-not (Select-String -LiteralPath $OutputPath, $MetricsPath -SimpleMatch $canary -Quiet)) 'No excluded canary value appears in collector output'
 
 $resourceSpans = @($spanBatches | ForEach-Object { $_.resourceSpans } | Where-Object { (Get-AttributeValue $_.resource.attributes 'copilot_insights.config.version').stringValue -eq $configVersion })
 $spans = @($resourceSpans | ForEach-Object { $_.scopeSpans } | ForEach-Object { $_.spans })

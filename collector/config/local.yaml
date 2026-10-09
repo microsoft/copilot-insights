@@ -1,7 +1,15 @@
 # Local quick start profile. No authentication: publish the receiver on the loopback interface only.
 exporters:
+  # Spans and feedback for the insights service; kept across collector restarts.
   file/verification:
     path: "${env:CI_LOCAL_OUTPUT_PATH:-/data/telemetry.jsonl}"
+    append: true
+  # Cumulative metrics are re-exported continuously by open windows, so they are rotated and kept apart.
+  file/metrics:
+    path: "${env:CI_LOCAL_METRICS_OUTPUT_PATH:-/data/metrics.jsonl}"
+    rotation:
+      max_megabytes: 32
+      max_backups: 2
   otlp_grpc/dashboard:
     endpoint: "${env:CI_DASHBOARD_OTLP_ENDPOINT:-dashboard:18889}"
     tls:
@@ -13,6 +21,6 @@ service:
     traces:
       exporters: [file/verification, otlp_grpc/dashboard]
     metrics:
-      exporters: [file/verification, otlp_grpc/dashboard]
+      exporters: [file/metrics, otlp_grpc/dashboard]
     logs:
       exporters: [file/verification, otlp_grpc/dashboard]

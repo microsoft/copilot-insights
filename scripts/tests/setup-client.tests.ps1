@@ -6,6 +6,12 @@ $setup = Join-Path $PSScriptRoot '..' 'setup-client.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('copilot-insights-tests-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $root | Out-Null
 $failures = 0
+# VS Code terminals with Copilot OpenTelemetry enabled inherit exporter variables that temporary setup refuses.
+$inheritedTelemetryVariables = @{}
+foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys) -match '^(COPILOT_OTEL_|OTEL_)') {
+    $inheritedTelemetryVariables[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    Remove-Item -LiteralPath "Env:$name"
+}
 
 function Test-Case([string] $name, [scriptblock] $body) {
     try { & $body; Write-Host "PASS  $name" -ForegroundColor Green }
@@ -262,6 +268,7 @@ Test-Case 'Restore safely cleans up a snapshot when the original settings are al
 
 $resolvedRoot = [IO.Path]::GetFullPath($root)
 $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+foreach ($name in $inheritedTelemetryVariables.Keys) { [Environment]::SetEnvironmentVariable($name, $inheritedTelemetryVariables[$name], 'Process') }
 if (-not $resolvedRoot.StartsWith((Join-Path $temporaryRoot 'copilot-insights-tests-'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected test cleanup path.' }
 Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
 if ($failures) { Write-Host "$failures test(s) failed." -ForegroundColor Red; exit 1 }

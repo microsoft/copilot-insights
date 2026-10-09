@@ -27,7 +27,9 @@ You should not need Docker, Azure CLI, repository files, collector configuration
 
 The intended data is usage metadata: operation/tool names, models, token counts, timings, error categories, supported feedback, and approved group labels. Content and identity capture remain off in the planned baseline. The filters exclude known content, identity, repository, and path fields, but still have [validation gaps](architecture.md#processing-pipeline). This preview is not a universal sensitive-data filter or an individual productivity score.
 
-The [local portal](analytics.md) composes span-based aggregates and human-review signals. Its review decisions are not Copilot thumbs-up/down events. Authenticated shared analytics and an Azure query adapter are separate, unimplemented production work.
+The [portal](analytics.md) composes span-based aggregates and human-review signals. Its decisions are not Copilot thumbs-up/down events. [Entra admin protection](production-access.md) is implemented separately from ingestion authentication. The Azure template can host the portal against the usage workspace; that cloud path and live production qualification remain unverified.
+
+The [project companion](projects.md) sets the window's project from the status bar, stores it in `.copilot-insights/project.json`, and registers the native window ID. Select the project before Copilot work; the first selection applies immediately and prompts for a reload, and later changes require a reload. All chats in a window inherit its project. Missing configuration stays unattributed. In production, Intune installs/configures the companion and administrators assign `Insights.Publisher`; users need no admin analytics role merely to contribute context.
 
 ## Local development and administrator diagnostics
 

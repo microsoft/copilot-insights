@@ -1,3 +1,5 @@
+import { apiFetch, initializeAuth } from './auth.js';
+
 const byId = (id) => document.getElementById(id);
 const number = (value) => value === null ? '—' : new Intl.NumberFormat().format(value);
 const compact = (value) => value === null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -5,6 +7,7 @@ const percent = (value) => value === null ? '—' : `${(value * 100).toFixed(val
 const duration = (value) => value === null ? '—' : value < 1000 ? `${number(value)} ms` : `${(value / 1000).toFixed(1)} s`;
 const dateTime = (value) => value === null ? 'Not available' : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
 const statuses = { unreviewed: 'Needs review', investigating: 'Investigating', reviewed: 'Reviewed', dismissed: 'Dismissed' };
+const newEvidence = (finding) => finding.review.newEvidence && finding.review.status !== 'unreviewed' && badge('New evidence since review', 'priority-medium');
 const priorities = { high: 'High priority', medium: 'Review suggested', low: 'For awareness' };
 const views = {
   overview: ['Insights overview', 'A clearer picture of agent activity, with evidence behind every signal.'],
@@ -15,10 +18,11 @@ const views = {
 const parameters = new URLSearchParams(location.search);
 const state = {
   source: parameters.get('source') === 'local' ? 'local' : 'demo',
-  organizationId: parameters.get('organization'), organizations: [],
+  organizationId: parameters.get('organization'), organizations: [], defaultOrganizationId: null,
+  projectKey: parameters.get('project') ?? 'all', projects: [], mode: 'local',
   days: [7, 14, 30].includes(Number(parameters.get('days'))) ? Number(parameters.get('days')) : 7,
   view: Object.hasOwn(views, parameters.get('view')) ? parameters.get('view') : 'overview',
-  data: null, error: null, reviewStatus: 'all', search: '',
+  data: null, error: null, scopeError: false, reviewStatus: 'all', search: '',
 };
 let requestController;
 let requestVersion = 0;
@@ -148,7 +152,7 @@ function findingCard(finding) {
   return element('article', { class: 'finding-card' },
     element('div', { class: 'finding-top' }, badge(priorities[finding.priority], `priority-${finding.priority}`), element('span', { class: 'finding-category' }, finding.category)),
     element('h3', {}, finding.title), element('p', {}, finding.description),
-    finding.review.status !== 'unreviewed' && element('div', { class: 'finding-state' }, badge(statuses[finding.review.status], `status-${finding.review.status}`)),
+    finding.review.status !== 'unreviewed' && element('div', { class: 'finding-state' }, badge(statuses[finding.review.status], `status-${finding.review.status}`), ' ', newEvidence(finding)),
     element('div', { class: 'finding-footer' }, element('span', { class: 'evidence-count' }, `${number(finding.evidenceCount)} evidence spans`),
       button(['Review evidence', icon('arrow')], () => openReview(finding), 'link', { 'aria-label': `Review ${finding.title}` })),
   );
@@ -182,10 +186,10 @@ function modelPreview(data) {
 
 function noData() {
   return element('section', { class: 'empty-state' }, element('div', { class: 'empty-icon' }, icon('inbox')),
-    element('h2', {}, 'Your organization is ready for VS Code activity'),
-    element('p', {}, 'Enable local OpenTelemetry with setup-client.ps1 Install -Local -Temporary, reload a disposable VS Code window, and ask Local Copilot to read a sample file. Then refresh this organization. Ordinary terminal commands alone do not emit Copilot spans.'),
+    element('h2', {}, 'This project scope is ready for VS Code activity'),
+    element('p', {}, 'Enable OpenTelemetry, install the project companion, and select the project in the VS Code status bar before a small Copilot task, then refresh. Missing configuration stays unattributed. Ordinary terminal commands alone do not emit Copilot spans.'),
     element('p', { class: 'small-note' }, 'The demo stays separate. Missing telemetry is never replaced by sample data. Restore your editor settings with restore-client.ps1 after the test.'),
-    button('View demo organization', () => changeOrganization('synthetic-demo'), 'primary'),
+    state.organizations.some((entry) => entry.source === 'demo') && button('View demo organization', () => changeOrganization('synthetic-demo'), 'primary'),
     button('Check data quality', () => changeView('quality'), 'link'));
 }
 
@@ -207,13 +211,13 @@ function renderReviews(data) {
   const refreshResults = () => {
     const filtered = data.findings.filter((finding) => (state.reviewStatus === 'all' || finding.review.status === state.reviewStatus)
       && `${finding.title} ${finding.description} ${finding.category}`.toLowerCase().includes(state.search.toLowerCase()));
-    resultCount.textContent = `${filtered.length} of ${data.findings.length} signals · Decisions apply to this evidence snapshot`;
+    resultCount.textContent = `${filtered.length} of ${data.findings.length} signals · Decisions stay with this organization, project, and window; later evidence is flagged`;
     results.replaceChildren(filtered.length ? table([
       { label: 'Signal & evidence' }, { label: 'Priority' }, { label: 'Decision' }, { label: 'Spans', numeric: true }, { label: 'Review', numeric: true },
     ], filtered.map((finding) => [
       element('div', {}, element('span', { class: 'review-title' }, finding.title), element('span', { class: 'review-description' }, finding.description)),
       badge(priorities[finding.priority], `priority-${finding.priority}`),
-      element('div', {}, badge(statuses[finding.review.status], `status-${finding.review.status}`), finding.review.updatedAt && element('span', { class: 'review-description' }, `Saved ${dateTime(finding.review.updatedAt)}`)),
+      element('div', {}, badge(statuses[finding.review.status], `status-${finding.review.status}`), ' ', newEvidence(finding), finding.review.updatedAt && element('span', { class: 'review-description' }, `Saved ${dateTime(finding.review.updatedAt)}`)),
       number(finding.evidenceCount),
       button(['Review', icon('arrow')], () => openReview(finding), 'link', { 'aria-label': `Review ${finding.title}` }),
     ]), 'Rule-based signals and local human review decisions', 'review-table') : element('div', { class: 'empty-state' },
@@ -259,15 +263,19 @@ function renderQuality(data) {
       element('section', { class: 'panel' }, panelHeading('Source & freshness', 'A snapshot, not a live-service guarantee'), facts([
         ['Organization', data.organization.name],
         ['Organization ID', data.organizationId],
-        ['Source', data.source === 'demo' ? 'Isolated synthetic generator' : 'Read-only local collector'],
+        ['Project', data.project.name],
+        ['Project key', data.projectKey],
+        ['Attributed spans', number(quality.attributedSpans)],
+        ['Unattributed spans', number(quality.unattributedSpans)],
+        ['Source', data.source === 'demo' ? 'Isolated synthetic generator' : quality.backend === 'log-analytics' ? 'Azure Monitor (Log Analytics) query' : 'Read-only collector capture'],
         ['Latest accepted span', dateTime(quality.latestTimestamp)],
         ['Freshness', data.source === 'demo' ? 'Demonstration, not live usage' : quality.latestTimestamp === null ? 'No accepted data' : quality.stale ? 'Older than 15 minutes' : 'Within 15 minutes'],
         ['Selected window', `${data.window.from.slice(0, 10)} – ${data.window.to.slice(0, 10)} (UTC)`],
         ['Accepted spans in window', number(quality.acceptedSpans)],
         ['Verification-tagged spans', number(quality.fixtureTaggedSpans)],
-        ['Input file present', data.source === 'demo' ? 'Not used' : quality.missing ? 'No' : 'Yes'],
+        ['Input file present', data.source === 'demo' || quality.backend === 'log-analytics' ? 'Not used' : quality.missing ? 'No' : 'Yes'],
       ])),
-      element('section', { class: 'panel' }, panelHeading('Replay & input handling', 'File-wide diagnostics, not windowed activity totals'), facts([
+      element('section', { class: 'panel' }, panelHeading('Replay & input handling', 'Organization-wide file diagnostics; metrics are never divided between projects'), facts([
         ['Identical replayed spans', number(quality.duplicateSpans)],
         ['Conflicting identities excluded', number(quality.conflictingSpans)],
         ['Unsupported or invalid spans excluded', number(quality.excludedSpans)],
@@ -276,7 +284,7 @@ function renderQuality(data) {
         ['Metric records (not summed)', number(quality.metricRecords)],
         ['Log records (not counted as calls)', number(quality.logRecords)],
       ]))),
-    element('section', { class: 'panel' }, panelHeading('Correlation within this organization', 'IDs come from the client; the collector assigns the organization'), facts([
+    element('section', { class: 'panel' }, panelHeading('Correlation within this project scope', 'Native IDs identify activity; a separate window registry supplies project context'), facts([
       ['Distinct trace IDs', number(data.correlation.traces)],
       ['Child spans linked to a parent in this window', `${number(data.correlation.linkedChildSpans)} of ${number(data.correlation.spansWithParent)}`],
       ['Conversation IDs', `${number(data.correlation.conversations)} across ${number(data.correlation.spansWithConversationId)} spans`],
@@ -285,7 +293,7 @@ function renderQuality(data) {
       ['Feedback logs linked to spans in this window', `${number(data.correlation.matchedFeedbackLogs)} of ${number(data.correlation.feedbackLogs)}`],
     ]), element('p', { class: 'small-note' }, 'A conversation can span several traces. Feedback without a trace ID joins by conversation ID and, when present, window/session ID. Missing parents can be outside this window. Sessions are not users; metric aggregates are not per-call joins.'),
       data.correlation.recentTraces.length ? table([{ label: 'Recent trace ID' }, { label: 'Spans', numeric: true }, { label: 'Linked children', numeric: true }], data.correlation.recentTraces.map((trace) => [
-        data.source === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${trace.traceId}`, target: '_blank', rel: 'noreferrer' }, element('code', {}, trace.traceId)) : element('code', {}, trace.traceId),
+        data.source === 'local' && state.mode === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${trace.traceId}`, target: '_blank', rel: 'noreferrer' }, element('code', {}, trace.traceId)) : element('code', {}, trace.traceId),
         number(trace.spans), number(trace.linkedChildren),
       ]), 'Recent traces in the selected organization') : element('p', { class: 'small-note' }, 'No trace IDs reported yet.')),
     element('section', { class: 'panel' }, panelHeading('How to read these insights', 'Public, deterministic rules rather than generated conclusions'),
@@ -293,7 +301,7 @@ function renderQuality(data) {
         element('li', {}, 'Counts use one canonical representation per operation. Exact replays are deduplicated by collector organization, service/scope, trace ID, and span ID; conflicting identities are excluded.'),
         element('li', {}, 'Tokens are observed consumption only. P95 is nearest-rank across reported model durations. The 5-second latency and 15-minute freshness thresholds are evaluation defaults, not production SLOs.'),
         element('li', {}, 'Model errors, cancellations, OK statuses, and unknown outcomes remain distinct. None is proof of task completion or individual productivity.'),
-        element('li', {}, 'Review decisions belong to the selected organization, UTC window, and exact evidence snapshot. New evidence or another organization cannot inherit a previous approval.'),
+        element('li', {}, 'Review decisions belong to the selected organization, project filter, and window length. Evidence that arrives after a decision is flagged as new instead of resetting it. Switching to all projects also creates a separate review scope.'),
         element('li', {}, 'This local file adapter is not an authorized cloud query service. It does not complete real-client, privacy, Azure, or shared-access qualification.'))),
   );
 }
@@ -303,7 +311,8 @@ function spanCorrelation(span, source) {
     ['Trace ID', span.traceId], ['Span ID', span.spanId], ['Parent span ID', span.parentSpanId ?? 'Not reported'],
     ['Conversation ID', span.conversationId ?? 'Not reported'], ['Window/session ID', span.sessionId ?? 'Not reported'],
     ['Tool-call ID', span.toolCallId ?? 'Not reported'],
-  ]), source === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${span.traceId}`, target: '_blank', rel: 'noreferrer' }, 'Open trace in Aspire') : 'Synthetic trace; not sent to a collector');
+  ]), source === 'local' && state.mode === 'local' ? element('a', { href: `http://127.0.0.1:18888/traces/detail/${span.traceId}`, target: '_blank', rel: 'noreferrer' }, 'Open trace in Aspire')
+    : source === 'demo' ? 'Synthetic trace; not sent to a collector' : 'Use your approved trace viewer for this trace ID.');
 }
 
 function openReview(finding) {
@@ -311,7 +320,7 @@ function openReview(finding) {
   const dialog = byId('review-dialog');
   const data = state.data;
   const close = button('×', () => dialog.close(), 'quiet', { class: 'close-button', 'aria-label': 'Close evidence review' });
-  const sourceLabel = `${data.organization.name} · ${data.source === 'demo' ? 'Synthetic example, not real usage' : 'Local collector snapshot'}`;
+  const sourceLabel = `${data.organization.name} · ${data.project.name} · ${data.source === 'demo' ? 'Synthetic example, not real usage' : 'Collector snapshot'}`;
   const evidenceRows = finding.evidence.map((span) => [
     element('span', { class: 'evidence-time' }, dateTime(span.timestamp)),
     element('div', {}, span.model ?? span.tool ?? span.operation, element('span', { class: 'review-description' }, span.operation)),
@@ -327,16 +336,16 @@ function openReview(finding) {
     decision.disabled = true;
     errorArea.replaceChildren();
     try {
-      const response = await fetch('/api/reviews', {
+      const response = await apiFetch('/api/reviews', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Review-Token': data.reviewToken },
-        body: JSON.stringify({ organizationId: data.organizationId, days: data.window.days, findingId: finding.id, status: decision.value, expectedRevision: finding.review.revision }),
+        body: JSON.stringify({ organizationId: data.organizationId, projectKey: data.projectKey, days: data.window.days, findingId: finding.id, status: decision.value, expectedRevision: finding.review.revision }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error?.message ?? 'The decision could not be saved.');
       finding.review = result.review;
       if (dialog.open) dialog.close();
       render();
-      notify(`Decision saved locally: ${statuses[result.review.status]}.`);
+      notify(`Decision saved: ${statuses[result.review.status]}.`);
     } catch (error) {
       errorArea.replaceChildren(element('p', { class: 'inline-error' }, error.message), button('Refresh evidence', () => { dialog.close(); loadData(); }, 'link'));
     } finally {
@@ -347,7 +356,7 @@ function openReview(finding) {
   dialog.replaceChildren(
     element('div', { class: 'dialog-header' }, element('div', {}, element('div', { class: 'eyebrow' }, 'EVIDENCE REVIEW'), element('h2', { id: 'review-title', tabindex: '-1' }, finding.title)), close),
     element('div', { class: 'dialog-body' },
-      element('div', { class: 'dialog-pills' }, badge(priorities[finding.priority], `priority-${finding.priority}`), badge(finding.category, 'priority-low'), badge(statuses[finding.review.status], `status-${finding.review.status}`)),
+      element('div', { class: 'dialog-pills' }, badge(priorities[finding.priority], `priority-${finding.priority}`), badge(finding.category, 'priority-low'), badge(statuses[finding.review.status], `status-${finding.review.status}`), newEvidence(finding)),
       element('p', {}, finding.description),
       element('div', { class: 'observed-value' }, element('span', {}, 'Observed in this snapshot'), element('strong', {}, finding.observed)),
       element('div', { class: 'rule-block' }, element('h3', {}, 'Why it surfaced'), element('p', {}, finding.rule)),
@@ -356,9 +365,9 @@ function openReview(finding) {
       evidenceRows.length ? table([{ label: 'Time (local)' }, { label: 'Operation' }, { label: 'In / out tokens', numeric: true }, { label: 'Duration', numeric: true }, { label: 'Outcome' }, { label: 'Trace' }], evidenceRows, 'Sanitized evidence spans supporting this finding', 'evidence-table')
         : element('p', { class: 'small-note' }, 'This finding concerns excluded records. Raw conflicting data is intentionally not exposed.'),
       element('div', { class: 'review-guidance' }, element('h3', {}, 'Before you decide'), element('p', {}, finding.guidance)),
-      element('p', { class: 'small-note' }, `Evidence fingerprint ${finding.id}. Missing values are shown as —. Trace links open the separate local Aspire diagnostics view; synthetic demo spans have no collector trace.`)),
+      element('p', { class: 'small-note' }, `Signal ID ${finding.id}. Missing values are shown as —. Trace links open the separate local Aspire diagnostics view; synthetic demo spans have no collector trace.`)),
     element('div', { class: 'dialog-footer' }, element('div', { class: 'decision-controls' }, element('label', { class: 'decision-field', for: 'review-decision' }, 'Your review decision', decision), save),
-      element('p', { class: 'decision-note' }, 'Saved on this machine only. No free-text notes, identities, or external uploads.'), errorArea),
+      element('p', { class: 'decision-note' }, 'Saved in this Insights deployment. No free-text notes or reviewer identities are stored.'), errorArea),
   );
   dialog.showModal();
   byId('review-title').focus();
@@ -369,6 +378,8 @@ function updateChrome() {
   byId('page-description').textContent = views[state.view][1];
   byId('organization-selector').value = state.organizationId ?? '';
   byId('organization-selector').disabled = !state.organizations.length;
+  byId('project-selector').value = state.projectKey;
+  byId('project-selector').disabled = !state.projects.length;
   document.querySelectorAll('[data-days]').forEach((node) => node.setAttribute('aria-pressed', String(Number(node.dataset.days) === state.days)));
   document.querySelectorAll('[data-view]').forEach((node) => {
     const selected = node.dataset.view === state.view;
@@ -377,26 +388,33 @@ function updateChrome() {
   });
   byId('view-panel').setAttribute('aria-labelledby', `tab-${state.view}`);
   if (state.organizationId) {
-    const query = new URLSearchParams({ organization: state.organizationId, days: String(state.days), view: state.view });
+    const query = new URLSearchParams({ organization: state.organizationId, project: state.projectKey, days: String(state.days), view: state.view });
     history.replaceState(null, '', `/?${query}`);
   }
   const notice = byId('source-notice');
-  notice.className = `source-notice${state.source === 'demo' ? ' notice-demo' : ''}`;
+  const organization = state.organizations.find((entry) => entry.id === state.organizationId);
+  notice.className = `source-notice${organization?.source === 'demo' ? ' notice-demo' : ''}`;
   notice.replaceChildren(icon('info'), element('span', {},
-    element('span', { class: 'notice-label' }, `${state.organizations.find((entry) => entry.id === state.organizationId)?.name ?? 'Loading organization'}: `),
-    state.source === 'demo' ? 'Fictional sample data, ready to explore. Next, enable VS Code logging and switch to your local organization. Data and decisions stay separate.'
+    element('span', { class: 'notice-label' }, `${organization?.name ?? 'Organization'}: `),
+    !organization ? (state.error ? 'Not configured in this service.' : 'Loading…')
+      : organization.source === 'demo' ? 'Fictional projects, ready to explore. Select a project to compare scopes; no examples are emitted by Copilot.'
       : state.data?.quality.fixtureTaggedSpans ? 'Verification fixtures are present. Sample activity is not real-user usage.'
-        : 'Only the narrow metadata projection is displayed. No source data is sent to external services.'));
+        : `${state.data?.project.name ?? 'Selected project'} · Window registrations supply project context. No selection means unattributed; changing a window's project requires a reload.`));
   byId('review-count').textContent = state.data ? number(pending(state.data.findings).length) : '—';
-  byId('updated-at').textContent = state.data ? `Snapshot refreshed ${dateTime(state.data.generatedAt)} · Local only` : 'No external analytics or tracking';
+  byId('updated-at').textContent = state.data ? `Snapshot refreshed ${dateTime(state.data.generatedAt)} · ${state.mode === 'local' ? 'Local evaluation' : 'Admin access'}` : 'No external analytics or tracking';
 }
 
 function render() {
   updateChrome();
   const panel = byId('view-panel');
   if (state.error) {
-    panel.replaceChildren(element('div', { class: 'empty-state error-state', role: 'alert' }, element('div', { class: 'empty-icon' }, icon('alert')), element('h2', {}, 'Insights are temporarily unavailable'),
-      element('p', {}, state.error), element('p', {}, 'No cached or substitute data is displayed.'), button('Try again', loadData, 'primary')));
+    const knownOrganization = state.organizations.some((entry) => entry.id === state.organizationId);
+    const recover = !state.scopeError ? button('Try again', loadData, 'primary')
+      : knownOrganization ? button('Show all projects', () => { state.projectKey = 'all'; loadData(); }, 'primary')
+        : button('Open the default organization', () => changeOrganization(state.defaultOrganizationId), 'primary');
+    panel.replaceChildren(element('div', { class: 'empty-state error-state', role: 'alert' }, element('div', { class: 'empty-icon' }, icon('alert')),
+      element('h2', {}, state.scopeError ? 'This scope is not available' : 'Insights are temporarily unavailable'),
+      element('p', {}, state.error), element('p', {}, 'No cached or substitute data is displayed.'), recover));
   } else if (!state.data) {
     panel.replaceChildren(element('div', { class: 'loading-state', role: 'status' }, 'Reading a fresh local snapshot…'));
   } else {
@@ -412,6 +430,8 @@ function changeView(view) {
 
 function changeOrganization(organizationId) {
   state.organizationId = organizationId;
+  state.projectKey = 'all';
+  state.projects = [];
   state.source = state.organizations.find((entry) => entry.id === organizationId)?.source;
   state.search = '';
   state.reviewStatus = 'all';
@@ -425,35 +445,46 @@ async function loadData() {
   const version = ++requestVersion;
   state.data = null;
   state.error = null;
+  state.scopeError = false;
   byId('refresh-button').disabled = true;
   byId('view-panel').setAttribute('aria-busy', 'true');
   render();
   try {
     if (!state.organizations.length) {
-      const catalogResponse = await fetch('/api/organizations', { signal: controller.signal });
+      const catalogResponse = await apiFetch('/api/organizations', { signal: controller.signal });
       const catalog = await catalogResponse.json();
       if (!catalogResponse.ok || !Array.isArray(catalog.organizations)) throw new Error('The organization catalog is unavailable. No substitute data is shown.');
       if (version !== requestVersion) return;
       state.organizations = catalog.organizations;
+      state.defaultOrganizationId = catalog.defaultOrganizationId;
       byId('organization-selector').replaceChildren(...catalog.organizations.map((entry) => element('option', { value: entry.id }, entry.name)));
       if (!state.organizationId) {
         const legacySource = parameters.get('source');
         state.organizationId = legacySource ? catalog.organizations.find((entry) => entry.source === legacySource)?.id : catalog.defaultOrganizationId;
       }
     }
+    const scopeError = (message) => Object.assign(new Error(message), { scope: true });
     const selected = state.organizations.find((entry) => entry.id === state.organizationId);
-    if (!selected) throw new Error('This organization is not configured. Choose an organization from the list.');
+    if (!selected) throw scopeError('This organization is not configured. Choose an organization from the list.');
     state.source = selected.source;
-    const query = new URLSearchParams({ organization: state.organizationId, days: String(state.days) });
-    const response = await fetch(`/api/insights?${query}`, { signal: controller.signal });
+    const projectResponse = await apiFetch(`/api/projects?${new URLSearchParams({ organization: state.organizationId })}`, { signal: controller.signal });
+    const catalog = await projectResponse.json();
+    if (!projectResponse.ok || !Array.isArray(catalog.projects) || catalog.organizationId !== state.organizationId) throw new Error('The project catalog is unavailable. No substitute scope is selected.');
+    if (version !== requestVersion) return;
+    state.projects = catalog.projects;
+    byId('project-selector').replaceChildren(...catalog.projects.map((entry) => element('option', { value: entry.id }, entry.name)));
+    if (!catalog.projects.some((entry) => entry.id === state.projectKey)) throw scopeError('This project is not available in the selected organization. Choose a project from the list.');
+    const query = new URLSearchParams({ organization: state.organizationId, project: state.projectKey, days: String(state.days) });
+    const response = await apiFetch(`/api/insights?${query}`, { signal: controller.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message ?? 'The local insights service could not return a snapshot.');
-    if (data.schemaVersion !== 1 || data.source !== state.source || data.organizationId !== state.organizationId) throw new Error('The snapshot organization or schema is not supported.');
+    if (data.schemaVersion !== 1 || data.source !== state.source || data.organizationId !== state.organizationId || data.projectKey !== state.projectKey) throw new Error('The snapshot organization, project, or schema is not supported.');
     if (version !== requestVersion) return;
     state.data = data;
   } catch (error) {
     if (error.name === 'AbortError' || version !== requestVersion) return;
     state.error = error.message;
+    state.scopeError = Boolean(error.scope);
   } finally {
     if (version === requestVersion) {
       byId('refresh-button').disabled = false;
@@ -470,6 +501,7 @@ function notify(message) {
 }
 
 byId('organization-selector').addEventListener('change', (event) => changeOrganization(event.target.value));
+byId('project-selector').addEventListener('change', (event) => { state.projectKey = event.target.value; state.reviewStatus = 'all'; state.search = ''; loadData(); });
 byId('refresh-button').addEventListener('click', loadData);
 document.querySelectorAll('[data-days]').forEach((node) => node.addEventListener('click', () => { state.days = Number(node.dataset.days); loadData(); }));
 const tabs = [...document.querySelectorAll('[data-view]')];
@@ -499,4 +531,8 @@ for (const dialogId of ['review-dialog', 'policy-dialog']) {
     if (event.key === 'Escape') { event.preventDefault(); dialog.close(); }
   });
 }
-loadData();
+initializeAuth().then((access) => { state.mode = access.mode; if (access.ready) return loadData(); }).catch(() => {
+  byId('main').hidden = true;
+  byId('auth-panel').hidden = false;
+  byId('auth-message').textContent = 'Access could not be established. Check the service authentication configuration and reload; no reports are displayed.';
+});

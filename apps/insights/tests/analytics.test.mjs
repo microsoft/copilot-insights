@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
@@ -157,16 +157,20 @@ test('UTC windows and future timestamps do not fabricate current activity', () =
   assert.equal(data.trend[6].calls, 1);
 });
 
-test('demo data is deterministic and review identities are isolated by source, window, and evidence', () => {
+test('review identities stay stable as evidence and UTC days change, and are isolated by source and window', () => {
   const demo = demoTelemetry(NOW);
   assert.deepEqual(demo, demoTelemetry(NOW));
-  const first = insights([fixture()]);
-  assert.equal(first.findings[0].id, insights([fixture()]).findings[0].id);
-  assert.notEqual(first.findings[0].id, insights([fixture()], { source: 'demo' }).findings[0].id);
-  assert.notEqual(first.findings[0].id, insights([fixture()], { days: 14 }).findings[0].id);
+  const signal = (data) => data.findings.find((finding) => finding.kind === 'unknown-outcomes');
+  const first = signal(insights([fixture()]));
+  assert.equal(first.id, signal(insights([fixture()])).id);
+  assert.notEqual(first.id, signal(insights([fixture()], { source: 'demo' })).id);
+  assert.notEqual(first.id, signal(insights([fixture()], { days: 14 })).id);
   const changed = fixture();
   modelSpan(changed).endTimeUnixNano = nano(NOW);
-  assert.notEqual(first.findings[0].id, insights([changed]).findings[0].id);
+  const later = signal(insights([changed], { now: NOW + 86_400_000 }));
+  assert.equal(later.id, first.id);
+  assert.equal(first.latestEvidenceAt, NOW - 1000);
+  assert.equal(later.latestEvidenceAt, NOW);
 });
 
 test('JSONL reader handles absent files, UTF-8 BOM, CRLF, and a partial append', async (context) => {
@@ -177,6 +181,32 @@ test('JSONL reader handles absent files, UTF-8 BOM, CRLF, and a partial append',
   const data = await readTelemetry(path);
   assert.equal(data.spans.length, 3);
   assert.equal(data.pendingRecord, true);
+});
+
+test('the JSONL reader parses only appended records and starts over after truncation, rewrite, or replacement', async (context) => {
+  const directory = await temporary(context);
+  const path = join(directory, 'telemetry.jsonl');
+  const second = fixture();
+  for (const span of second.resourceSpans[0].scopeSpans[0].spans) span.traceId = '2'.repeat(32);
+  await writeFile(path, `${JSON.stringify(fixture())}\n`);
+  assert.equal((await readTelemetry(path)).spans.length, 3);
+  await appendFile(path, `${JSON.stringify(second)}\n{"resourceSpans":`);
+  const [appended, concurrent] = await Promise.all([readTelemetry(path), readTelemetry(path)]);
+  assert.equal(appended.spans.length, 6);
+  assert.equal(appended.pendingRecord, true);
+  assert.equal(concurrent.spans.length, 6);
+  assert.equal(concurrent.quality.duplicateSpans, 0);
+  await writeFile(path, `${JSON.stringify(second)}\n`);
+  assert.deepEqual((await readTelemetry(path)).spans.map((span) => span.traceId), Array(3).fill('2'.repeat(32)));
+  const rewritten = structuredClone(second);
+  modelSpan(rewritten).endTimeUnixNano = nano(NOW - 999);
+  await writeFile(path, `${JSON.stringify(rewritten)}\n`);
+  const sameSize = await readTelemetry(path);
+  assert.equal(sameSize.quality.conflictingSpans, 0);
+  assert.equal(sameSize.spans.find((span) => span.spanId === 'b'.repeat(16)).timestamp, NOW - 999);
+  await writeFile(join(directory, 'replacement.jsonl'), `${JSON.stringify(fixture())}\n${JSON.stringify(second)}\n`);
+  await rename(join(directory, 'replacement.jsonl'), path);
+  assert.equal((await readTelemetry(path)).spans.length, 6);
 });
 
 test('malformed complete records fail closed without returning source content or paths', async (context) => {
@@ -202,8 +232,8 @@ test('decisions persist atomically across store reloads and reject concurrent st
   assert.equal(restored.get(id).status, 'reviewed');
   assert.equal(restored.get(id).revision, 1);
   const saved = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(saved.version, 2);
-  assert.deepEqual(Object.keys(saved.decisions[0]).sort(), ['id', 'organizationId', 'revision', 'source', 'status', 'updatedAt']);
+  assert.equal(saved.version, 5);
+  assert.deepEqual(Object.keys(saved.decisions[0]).sort(), ['evidence', 'id', 'organizationId', 'projectKey', 'revision', 'source', 'status', 'updatedAt']);
 });
 
 async function service(context, withData = true) {
@@ -251,7 +281,7 @@ test('HTTP boundary rejects foreign hosts, origins, arbitrary files, and unsuppo
   assert.equal((await fetch(`${base}/api/insights?days=7&days=30`)).status, 400);
 });
 
-test('review API requires same-origin token, validates enums, and detects stale evidence', async (context) => {
+test('review API requires same-origin token, validates enums, and keeps decisions while flagging new evidence', async (context) => {
   const { base, telemetryPath } = await service(context);
   const data = await (await fetch(`${base}/api/insights?source=local`)).json();
   const body = { source: 'local', days: 7, findingId: data.findings[0].id, status: 'reviewed', expectedRevision: 0 };
@@ -266,10 +296,18 @@ test('review API requires same-origin token, validates enums, and detects stale 
   assert.equal((await post(body)).status, 409);
   const refreshed = await (await fetch(`${base}/api/insights?source=local`)).json();
   assert.equal(refreshed.findings[0].review.status, 'reviewed');
+  assert.equal(refreshed.findings[0].review.newEvidence, false);
   const changed = fixture();
   modelSpan(changed).endTimeUnixNano = nano(NOW);
   await writeFile(telemetryPath, `${JSON.stringify(changed)}\n`);
-  assert.equal((await post({ ...body, expectedRevision: 1 })).status, 409);
+  const later = await (await fetch(`${base}/api/insights?source=local`)).json();
+  assert.equal(later.findings[0].id, body.findingId);
+  assert.equal(later.findings[0].review.status, 'reviewed');
+  assert.equal(later.findings[0].review.newEvidence, true);
+  const reviewedAgain = await post({ ...body, expectedRevision: 1 });
+  assert.equal(reviewedAgain.status, 200);
+  assert.equal((await reviewedAgain.json()).review.newEvidence, false);
+  assert.equal((await post({ ...body, findingId: 'f'.repeat(24), expectedRevision: 0 })).status, 409);
 });
 
 test('API failures do not reflect malformed file contents or local paths', async (context) => {
@@ -342,7 +380,7 @@ test('unknown, duplicate and contradictory organization selectors fail closed', 
   assert.equal(legacy.organizationId, 'local-dev');
 });
 
-test('foreign organization records do not affect totals, diagnostics or evidence fingerprints', () => {
+test('foreign organization records do not affect totals, diagnostics or signal IDs', () => {
   const other = fixture();
   other.resourceSpans[0].resource = { attributes: [attr('service.name', 'copilot-chat'), attr('copilot_insights.organization.id', 'foreign-org')] };
   other.resourceMetrics = [{ resource: other.resourceSpans[0].resource, scopeMetrics: [{ metrics: [{}] }] }];
@@ -381,9 +419,20 @@ test('legacy review state is preserved but does not silently acquire an organiza
   assert.equal(store.get(id, 'local-dev').status, 'unreviewed');
   await store.update('b'.repeat(24), 'local', 'investigating', 0, 'local-dev');
   const saved = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(saved.version, 2);
+  assert.equal(saved.version, 5);
   assert.equal(saved.decisions.length, 2);
   assert.equal(saved.decisions.find((decision) => decision.id === id).organizationId, null);
+});
+
+test('pre-project review scopes stay stored without matching a project filter', async (context) => {
+  const path = join(await temporary(context), 'reviews.json');
+  const id = 'c'.repeat(24);
+  await writeFile(path, JSON.stringify({ version: 3, decisions: [{ id, source: 'demo', organizationId: 'synthetic-demo', engagementKey: 'all',
+    status: 'reviewed', revision: 1, updatedAt: new Date(NOW).toISOString() }] }));
+  const store = new ReviewStore(path);
+  await store.load();
+  assert.equal(store.get(id, 'synthetic-demo').status, 'reviewed');
+  assert.equal(store.get(id, 'synthetic-demo', 'all').status, 'unreviewed');
 });
 
 test('correlation retains validated client IDs and links feedback without inventing a trace', () => {

@@ -39,6 +39,10 @@ Verify effective values and their sources with **Developer: Policy Diagnostics**
 
 ## Client package and lifecycle
 
+The managed package must also include the signed [project companion](../extensions/project-context). Endpoint administrators configure its machine-scoped service origin, `authentication=entra`, tenant ID, public-client ID, and API audience. Identity administrators assign the API's non-admin `Insights.Publisher` role and consent to `Context.Publish`; reserve `Insights.Admin` and `Insights.Read` for report reviewers. These are Entra app roles, not Azure subscription RBAC.
+
+Users choose their current project in the companion's status bar, or another approved tool writes the [project file](projects.md#set-the-project-from-another-tool). The companion registers only the project ID and native window ID; it does not ship project catalogs, workspace paths, or credentials. Selecting a project does not grant access to analytics. Validate separate windows, multiple chats, unattributed activity, reload boundaries, and token refresh in each managed pilot ring. This companion is implemented as source; signed Intune packaging and live tenant qualification are still release gates. See [production access and role validation](production-access.md).
+
 Build a signed, versioned installer and package it as an Intune Win32 app using the [Win32 Content Prep Tool](https://learn.microsoft.com/intune/app-management/deployment/create-win32-package). Follow [Intune's Win32 deployment workflow](https://learn.microsoft.com/intune/app-management/deployment/add-win32) for requirements, silent install/uninstall commands, detection rules, dependencies, assignments, and supersedence.
 
 - Include the pinned, checksum-verified collector, the reviewed filtering configuration, lifecycle components, and a manifest. Do not download an unpinned executable during installation.

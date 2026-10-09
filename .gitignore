@@ -443,5 +443,7 @@ FodyWeavers.xsd
 *.sqlite3
 /captures/
 deploy/local/.data/
+.copilot-insights/
+extensions/project-context/.vscode-test/
 deploy/azure/*.bicepparam
 !deploy/azure/main.example.bicepparam

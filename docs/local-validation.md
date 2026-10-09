@@ -1,10 +1,37 @@
-# Local validation: October 2–3, 2026
+# Local validation: October 2–4, 2026
 
 ## Result
 
-**The Docker Compose deployment, isolated synthetic integration checks, and native Windows Local Copilot emission/capture/restore checks work locally, including the organization-based analytics/human review portal. Shared, authenticated team analytics and the Intune-managed production client remain unimplemented.**
+**The local stack, project-filtered portal, read-only admin MCP, and automated Entra authorization checks pass. A real VS Code window's native Copilot spans were attributed to a project through the registration API. Two simultaneous native windows, the companion inside a real extension host, live Entra access, production storage, and the Intune-managed client still need qualification.**
 
-## Organization walkthrough
+## Project, authorization, and MCP checks
+
+Completed on **October 4, 2026 UTC** after replacing the earlier private engagement contract with the generic `.copilot-insights/project.json` contract and a status-bar project selector in the open-source companion, then fixing the review findings below. The local collector and insights images were rebuilt and their containers recreated; the existing native capture was kept. No Azure resources, tenant assignments, or VS Code settings were changed. Every end-to-end check below used disposable containers on separate loopback ports with in-memory state, so the native capture file was only read.
+
+| Check | Observed result |
+|---|---|
+| Service tests, built image, external networking disabled | **52 passed**: analytics, stable review identities with new-evidence flags, incremental capture reading after appends/truncation/rewrites/replacement, registration lifecycle with device-clock boundaries, renewal and 32-day retention, project/review isolation, legacy review state, production without the demo, generated signed-JWT validation, HTTP protections, and the official MCP client |
+| Companion tests with a mocked VS Code API | **10 passed**: generic project file, status-bar selection and clearing, reload prompt after the first selection, device time and clock-skew message, ignore file, reload prompt, workspace/endpoint invalidation and closure retry, bounded reads, and private-field exclusion |
+| PowerShell suites | Setup-client (run from a VS Code terminal that inherits Copilot OpenTelemetry variables), Entra role assignment (**5 passed**), telemetry reader, fixture contract (**12 passed**), and remote verification (**10 passed**) |
+| Native window, real Copilot spans | This chat's VS Code window registered without a project, then selected `contoso.alpha` using the companion's own registration code (not its VS Code host). The selection applied without a reload: subsequent native model and tool spans were attributed, while earlier spans stayed unattributed. A later switch returned `409`, and the closed project kept only the 26 spans inside its interval. A registration with the device clock 10 minutes behind was refused with `clock-skew`. |
+| Live review decision | Under **All projects**, a decision saved as **Reviewed** stayed **Reviewed** after new native spans arrived and showed **New evidence since review** in the review queue. |
+| Capture reading | The first report read the 15.5 MB native capture in 417 ms; later reports parsed only appended records in 24–35 ms. Recreating the collector kept the capture; metrics now arrive in `vscode-metrics.jsonl` instead. |
+| Synthetic pipeline through the real collector | **9 passed**: two projects, an unattributed and an unregistered window, two conversations in one window, switching, a delayed export inside the closed interval, and spoofed organization/project/identity attributes removed by the collector |
+| Collector privacy checks (`verify.ps1`, disposable collector) | **36 passed**, with spans/logs and metrics in separate files; a collector restart kept both files |
+| MCP with the official SDK | Three tools; every `list_projects` scope's `get_insights_report` matched the HTTP report and snapshot ID; no review tokens; the retired `engagement` argument is rejected |
+| Production mode with fictional IDs | Startup without `INSIGHTS_MODE` fails; foreign hosts get `403`; report/MCP and registration routes return `401` with admin and `Context.Publish` challenges; loopback health and the container health check pass |
+| Browser portal | Project selector and deep links, demo `sample-alpha` scope (51 of 136 seven-day model calls), quality facts, review save/reload, scope isolation, keyboard tabs/dialogs, no page overflow at 420 or 1,280 CSS pixels, no console errors, and same-origin requests only. Links to an unknown project or organization offer **Show all projects** or **Open the default organization**; while the catalog loads, the banner shows neutral text instead of demo text. |
+
+The existing review volume, written by the earlier implementation as version 3, still loads. Its decisions stay stored without matching any project filter.
+
+### Remaining acceptance gates
+
+- Two simultaneous native windows with different projects, the companion running in a real extension host, and multiple native chats remain **unverified**. The [maintainer runner](../extensions/project-context/README.md#validation) is supplied but was not executed.
+- The signed-token tests use generated test keys. Live Entra client registration/consent, interactive sign-in, real admin/publisher assignments, and revoked-role behavior still need the [production acceptance checklist](production-access.md#5-live-acceptance-checklist). The [Graph utility](../scripts/manage-entra-access.ps1) explicitly reports `TokenAndServiceValidated = false` even after a successful assignment lookup.
+- Production telemetry ingestion, per-project access control, distributed storage/retention, comprehensive privacy coverage, and Intune package qualification remain open. No removed cloud resources were recreated.
+- A targeted scan of changed and new deliverables found no private tenant/subscription identifiers, private feed URLs, developer profile paths, or credential patterns. Runtime captures, screenshots, local selection documents, and package caches stay ignored. This scan does not close the collector's separate privacy release gates.
+
+## Earlier native organization walkthrough
 
 On **October 3, 2026 UTC/PDT**, the [revised quick start](../README.md#try-it-on-your-machine) was exercised against the rebuilt local Compose stack. This was a **new native-client run**, not a replay of the historical mixed fixture/native capture below.
 
@@ -247,6 +274,7 @@ $env:CI_ORGANIZATION_ID = 'local-dev'
 $env:CI_OTLP_HTTP_ENDPOINT = '127.0.0.1:4318'
 $env:CI_HEALTH_ENDPOINT = '127.0.0.1:13133'
 $env:CI_LOCAL_OUTPUT_PATH = Join-Path $PWD 'deploy/local/.data/telemetry.jsonl'
+$env:CI_LOCAL_METRICS_OUTPUT_PATH = Join-Path $PWD 'deploy/local/.data/metrics.jsonl'
 $env:CI_DASHBOARD_OTLP_ENDPOINT = '127.0.0.1:18889'
 $env:GOMEMLIMIT = '128MiB'
 & ./deploy/local/.data/tools/otelcol-contrib.exe validate --config=collector/config/base.yaml --config=collector/config/local.yaml
@@ -261,7 +289,7 @@ In a third terminal:
 ```powershell
 ./scripts/tests/setup-client.tests.ps1
 ./scripts/tests/telemetry.tests.ps1
-./scripts/verify.ps1 -Endpoint http://127.0.0.1:4318 -HealthEndpoint http://127.0.0.1:13133/ -TimeoutSeconds 60
+./scripts/verify.ps1 -Endpoint http://127.0.0.1:4318 -HealthEndpoint http://127.0.0.1:13133/ -OutputPath deploy/local/.data/telemetry.jsonl -MetricsPath deploy/local/.data/metrics.jsonl -TimeoutSeconds 60
 ```
 
 Open `http://127.0.0.1:18888/traces`, select a trace, and inspect its `chat` span. In Metrics, select `copilot-chat` and the tool-call or feedback instrument, then switch between Graph and Table. The metrics view defaults to the last five minutes; rerun verification or widen the time window if the sample is no longer visible.

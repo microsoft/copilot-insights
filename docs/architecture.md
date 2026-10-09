@@ -1,6 +1,6 @@
 # Architecture
 
-Status: design with reference implementations of the collector and its privacy pipeline, local quick start, client setup script and forwarder, and private Azure deployment ([infrastructure](infrastructure.md)). A [local analytics and human review application](analytics.md) reads the sanitized collector file; the authorized cloud query and shared analytics components shown below remain unimplemented.
+Status: reference implementations of the collector/privacy pipeline, local quick start, diagnostic client/forwarder, and private Azure infrastructure. The [analytics application](analytics.md) reads sanitized JSONL locally or the Azure Monitor usage workspace in Azure, and supports [window/project attribution](projects.md), human review, and an [admin MCP API](admin-mcp.md), with explicit local or [Entra-protected modes](production-access.md). Live verification of the Azure query path and production/fleet qualification remain open.
 
 ## System boundaries
 
@@ -14,8 +14,11 @@ flowchart LR
     Management -. "Managed package (not yet implemented)" .-> Forwarder
     Forwarder --> Collector["Central collector: token validation, privacy filter"]
     Collector --> Store["Approved observability storage"]
-    Store --> Query["Authorized queries"]
-    Query --> View["Shared analytics (not implemented)"]
+    Store -->|"Managed identity, read-only"| View
+    Collector --> Capture["Sanitized JSONL (local)"]
+    Capture --> View["Portal and admin MCP: Entra app roles"]
+    Editor -. "Companion: window ID + selected project" .-> Registry["Persisted window registry"]
+    Registry --> View
 ```
 
 The forwarder is the same OpenTelemetry Collector as the central service, running with the [forwarder profile](../collector/config/forwarder.yaml) as the participant. It exists because Copilot's native export can neither authenticate itself with renewable credentials nor filter its own metadata. A successful test of one runtime does not establish that every runtime can use the same configuration.
@@ -116,9 +119,11 @@ An OTLP success response is not proof that every item is already stored and quer
 
 ## Query and dashboard boundary
 
-The [local review workspace](analytics.md) is a separate evaluation path: a read-only collector-file projection feeds aggregate views, rule-based findings, and a local review-state volume. It is included in Compose on loopback port 3000; Aspire diagnostics remains on port 18888. It does not query Azure, import private datasets, or implement shared user authorization. Demo examples are generated independently and kept separate from collected records.
+The [local review workspace](analytics.md) is a separate evaluation path: a read-only collector-file projection feeds aggregate views, rule-based findings, and a local review-state volume. It is included in Compose on loopback port 3000; Aspire diagnostics remains on port 18888. It does not query Azure or import private datasets. Local mode is unauthenticated and loopback-only; production mode requires Entra app roles for every report, review, MCP, and registration request ([production access](production-access.md)). Demo examples are generated independently, kept separate from collected records, and are not offered in production.
 
 An authorized backend queries the selected store and returns aggregates. The browser must not receive storage credentials. Enforce organization/cohort authorization server-side; a filter in the UI is not an access boundary.
+
+In the Azure deployment, the same application runs in production mode inside the internal Container Apps environment. It queries the usage Log Analytics workspace with its own managed identity (`Log Analytics Reader`), converts the stored rows back into the records the file adapter reads, and keeps review decisions and window registrations on a private file share. A partial query result fails closed.
 
 Display signal provenance, supported versions/runtimes, time window, last ingestion time, and gaps. Keep operational metrics separate from user activity. Avoid high-cardinality metric labels such as trace IDs, conversation IDs, paths, or free-form text.
 

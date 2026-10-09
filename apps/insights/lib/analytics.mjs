@@ -42,11 +42,13 @@ function breakdown(spans, field) {
     .sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
 }
 
-export function composeInsights(input, { source = 'local', days = 7, now = Date.now() } = {}) {
+export function composeInsights(input, { source = 'local', days = 7, now = Date.now(), projectKey = 'all' } = {}) {
   const organizationId = input.organizationId ?? 'local-dev';
   const today = Math.floor(now / DAY) * DAY;
   const from = today - (days - 1) * DAY;
-  const eligible = input.spans.filter((span) => span.timestamp <= now);
+  const inScope = (item) => projectKey === 'all' || (item.projectKey ?? 'unattributed') === projectKey;
+  const scopedSpans = input.spans.filter(inScope);
+  const eligible = scopedSpans.filter((span) => span.timestamp <= now);
   const spans = eligible.filter((span) => span.timestamp >= from).sort((left, right) => left.id.localeCompare(right.id));
   const calls = spans.filter((span) => span.operation === 'chat');
   const tools = spans.filter((span) => span.operation === 'execute_tool');
@@ -56,13 +58,13 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
   const unknown = calls.filter((span) => span.outcome === 'unknown');
   const missingTokens = calls.filter((span) => span.inputTokens === null || span.outputTokens === null);
   const slow = calls.filter((span) => span.durationMs !== null && span.durationMs > 5000);
-  const snapshotId = fingerprint([organizationId, source, days, today, spans, latestTimestamp]);
+  const snapshotId = fingerprint([organizationId, projectKey, source, days, today, spans, latestTimestamp]);
   const spanKeys = new Set(spans.map((span) => `${span.traceId}:${span.spanId}`));
   const traceIds = new Set(spans.map((span) => span.traceId));
   const conversationIds = new Set(spans.filter((span) => span.conversationId).map((span) => span.conversationId));
   const sessionConversations = new Set(spans.filter((span) => span.sessionId && span.conversationId)
     .map((span) => JSON.stringify([span.sessionId, span.conversationId])));
-  const feedback = (input.feedback ?? []).filter((item) => item.timestamp >= from && item.timestamp <= now);
+  const feedback = (input.feedback ?? []).filter((item) => inScope(item) && item.timestamp >= from && item.timestamp <= now);
   const matchedFeedback = feedback.filter((item) => item.traceId
     ? item.spanId ? spanKeys.has(`${item.traceId}:${item.spanId}`) : traceIds.has(item.traceId)
     : item.conversationId && (item.sessionId
@@ -77,14 +79,15 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     traceGroups.set(span.traceId, group);
   }
   const findings = [];
-  const addFinding = (kind, details, evidence) => {
+  const addFinding = (kind, details, evidence, evidenceCount = evidence.length) => {
     findings.push({
-      id: fingerprint([snapshotId, kind, details.observed]),
+      id: fingerprint([organizationId, projectKey, source, days, kind]),
       kind,
       ...details,
-      evidenceCount: evidence.length,
+      evidenceCount,
+      latestEvidenceAt: evidence.length ? evidence.reduce((latest, span) => Math.max(latest, span.timestamp), 0) : null,
       evidence: [...evidence].sort((left, right) => right.timestamp - left.timestamp).slice(0, 8),
-      review: { status: 'unreviewed', revision: 0, updatedAt: null },
+      review: { status: 'unreviewed', revision: 0, updatedAt: null, newEvidence: false },
     });
   };
   if (errors.length) addFinding('model-errors', {
@@ -135,7 +138,7 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     observed: `${input.quality.conflictingSpans} identities excluded from totals`,
     rule: 'Identical replays are counted once; all variants of a conflicting identity are excluded rather than choosing a value.',
     guidance: 'Investigate the exporter or file before relying on the remaining totals. Raw conflicting records are not exposed here.',
-  }, []);
+  }, [], input.quality.conflictingSpans);
   const priority = { high: 0, medium: 1, low: 2 };
   findings.sort((left, right) => priority[left.priority] - priority[right.priority]);
   const trend = Array.from({ length: days }, (_, index) => {
@@ -147,6 +150,7 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     schemaVersion: 1,
     source,
     organizationId,
+    projectKey,
     generatedAt: new Date(now).toISOString(),
     snapshotId,
     window: { days, from: new Date(from).toISOString(), to: new Date(now).toISOString() },
@@ -179,7 +183,10 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     quality: {
       ...input.quality,
       acceptedSpans: spans.length,
-      futureSpans: input.spans.length - eligible.length,
+      futureSpans: scopedSpans.length - eligible.length,
+      attributedSpans: spans.filter((span) => span.projectKey && span.projectKey !== 'unattributed').length,
+      unattributedSpans: spans.filter((span) => !span.projectKey || span.projectKey === 'unattributed').length,
+      organizationWideDiagnostics: projectKey !== 'all',
       fixtureTaggedSpans: spans.filter((span) => span.fixtureTagged).length,
       pendingRecord: input.pendingRecord,
       missing: input.missing,

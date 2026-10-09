@@ -83,7 +83,7 @@ Project-specific labels, set by the setup script through the `github.copilot.cha
 
 These are not built-in Copilot fields. The setup script accepts only short identifier-like values, and the value rule applies to them as well. Do not place personal information into tags.
 
-Fixed resource attributes label a configured runtime. They do not automatically follow the currently active project. Dynamic project attribution is a separate feature requiring a supported association between operation and workspace. Multiple windows, multi-root workspaces, worktrees, remote hosts, and non-Git folders need explicit behavior. Unknown context stays unattributed.
+Fixed resource attributes label a configured runtime. They do not automatically follow the currently active project. The [project registration contract](projects.md) separately binds a native window ID to the project selected for the first workspace folder, without inventing or mutating Copilot OTLP fields. Multiple chats inherit their window's binding; a window's first project applies immediately, while later changes close the old binding and require a new window ID before work resumes. Missing or uncertain context stays unattributed. Remote hosts, shared-folder windows, clock boundaries, delayed export, and unsplittable metrics have explicit limits in that guide; native multi-window qualification remains required.
 
 ## Normalization example
 
