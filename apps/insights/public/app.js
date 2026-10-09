@@ -21,7 +21,7 @@ const state = {
   organizationId: parameters.get('organization'), organizations: [], defaultOrganizationId: null,
   projectKey: parameters.get('project') ?? 'all', projects: [], mode: 'local',
   days: [7, 14, 30].includes(Number(parameters.get('days'))) ? Number(parameters.get('days')) : 7,
-  view: Object.hasOwn(views, parameters.get('view')) ? parameters.get('view') : 'overview',
+  view: Object.keys(views).find((view) => view === parameters.get('view')) ?? 'overview',
   data: null, error: null, scopeError: false, reviewStatus: 'all', search: '',
 };
 let requestController;
