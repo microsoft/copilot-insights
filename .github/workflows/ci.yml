@@ -86,11 +86,9 @@ jobs:
 
       - name: Build and lint
         run: |
-          az bicep install
-          bicep="$HOME/.azure/bin/bicep"
-          "$bicep" build deploy/azure/main.bicep --stdout > /dev/null
-          "$bicep" build-params deploy/azure/main.example.bicepparam --stdout > /dev/null
-          "$bicep" lint deploy/azure/main.bicep 2>&1 | tee lint.log
+          az bicep build --file deploy/azure/main.bicep --stdout > /dev/null
+          az bicep build-params --file deploy/azure/main.example.bicepparam --stdout > /dev/null
+          az bicep lint --file deploy/azure/main.bicep 2>&1 | tee lint.log
           if grep -q ': Warning ' lint.log; then echo 'Bicep lint reported warnings.'; exit 1; fi
 
       - name: Check the Deploy to Azure template
