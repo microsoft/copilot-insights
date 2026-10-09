@@ -2,6 +2,8 @@
 
 Self-hosted observability for GitHub Copilot agents in VS Code: inspect tool activity, model usage, token counts, and latency using OpenTelemetry.
 
+![Insights overview of the fictional demo organization: agent runs, observed tokens, P95 latency, error rate, daily activity, review signals, model mix, and collection coverage](docs/images/portal-overview.png)
+
 **Early preview for evaluation.** Synthetic collector tests and earlier native Windows Local Copilot capture/restore checks pass. The new project companion has automated tests, but native multi-window E2E, live Entra access, fleet, privacy, and end-to-end Azure qualification remain open. There is no public hosted offering or production-ready release. See [validation evidence](docs/local-validation.md) and [Project status](#project-status).
 
 ## Start here
@@ -139,7 +141,7 @@ The same service exposes a read-only **Streamable HTTP MCP server** at `http://1
 
 [![Deploy infrastructure to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoft%2Fcopilot-insights%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json)
 
-This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identities, and Azure Monitor storage. An administrator then builds/pushes the collector and insights images and redeploys with `deployCollector = true`. After registering the portal's Entra applications, a final redeploy with `deployInsights = true` adds the private, Entra-protected portal and admin MCP, which query the usage workspace with a managed identity. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
+This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identities, and Azure Monitor storage. An administrator then imports the collector and insights images from a [release](https://github.com/microsoft/copilot-insights/releases) (or builds them from source) and redeploys with `deployCollector = true`. After registering the portal's Entra applications, a final redeploy with `deployInsights = true` adds the private, Entra-protected portal and admin MCP, which query the usage workspace with a managed identity. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
 
 **Validation status:** the isolated Azure validation resources and their active ingestion registration were **removed and verified absent on October 3, 2026**, at the user's request. The collector was healthy before cleanup, but authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights were **not verified**. Read the [historical evidence, cleanup, and remaining gates](docs/azure-validation.md) before treating the template as an end-to-end deployment.
 

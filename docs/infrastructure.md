@@ -198,10 +198,19 @@ Share that link with authorized deployment administrators, not as an employee en
 
 3. Peer the client network with the collector network (`vnetId` output). Peering is outside this template because it usually crosses subscriptions or ownership boundaries.
 
-4. Build and push the images from a machine that can reach the registry: a host in a connected network, or one whose public range you temporarily added to `registryAllowedIpRanges` and redeployed.
+4. Put the collector and insights images into the private registry. To use a [published release](https://github.com/microsoft/copilot-insights/releases), import its images; the registry's trusted-service bypass lets Azure pull them without opening public access:
 
    ```powershell
-    $outputs = az deployment group show --resource-group '<resource-group>' --name copilot-insights --query properties.outputs -o json | ConvertFrom-Json
+   $outputs = az deployment group show --resource-group '<resource-group>' --name copilot-insights --query properties.outputs -o json | ConvertFrom-Json
+   $version = '<release-version>'   # for example 0.1.0, without the leading v
+   foreach ($name in 'copilot-insights-collector', 'copilot-insights-review') {
+       az acr import --name $outputs.registryName.value --source "ghcr.io/microsoft/${name}:$version" --image "${name}:$version"
+   }
+   ```
+
+   To deploy your own changes instead, build and push from a machine that can reach the registry: a host in a connected network, or one whose public range you temporarily added to `registryAllowedIpRanges` and redeployed.
+
+   ```powershell
    $image = "$($outputs.registryLoginServer.value)/copilot-insights-collector:0.1.0"
    $insightsImage = "$($outputs.registryLoginServer.value)/copilot-insights-review:0.1.0"
    docker build --tag $image collector
@@ -210,6 +219,8 @@ Share that link with authorized deployment administrators, not as an employee en
    docker push $image
    docker push $insightsImage
    ```
+
+   Set `collectorImage` and `insightsImage` to the tags you imported or pushed.
 
 5. Set `deployCollector = true`, clear any `registryAllowedIpRanges`, and run the deployment command again.
 
@@ -335,4 +346,4 @@ Keep identity enrollment aligned with managed assignments. Already-issued tokens
 - Route egress through a firewall, and disable public query access where operators work from connected networks.
 - Use `PrivateOnly` Azure Monitor access mode on dedicated networks.
 - Enable zone redundancy, and add a persistent sending queue.
-- Sign and publish the collector image from CI. CI currently builds and tests the image but does not publish it.
+- Sign the published images. Tagged releases publish both images to GitHub Container Registry with provenance and SBOM attestations, but without signatures.
