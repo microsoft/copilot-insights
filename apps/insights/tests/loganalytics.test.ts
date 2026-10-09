@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { composeInsights } from '../lib/analytics.mjs';
-import { countQuery, logAnalyticsSource, spanQuery } from '../lib/loganalytics.mjs';
-import { normalizeRecords } from '../lib/telemetry.mjs';
-import { createApp } from '../server.mjs';
+import { composeInsights } from '../lib/analytics.ts';
+import { countQuery, logAnalyticsSource, spanQuery, type Fetcher, type QueryTable } from '../lib/loganalytics.ts';
+import { normalizeRecords } from '../lib/telemetry.ts';
+import type { Span } from '../lib/types.ts';
+import { createApp } from '../server.ts';
 
 const NOW = Date.parse('2026-10-02T22:00:00.000Z');
 const WORKSPACE = '11111111-2222-3333-4444-555555555555';
@@ -14,15 +16,15 @@ const ORGANIZATION = 'example-org';
 const TRACE = '1'.repeat(32);
 const AGENT = 'a'.repeat(16);
 const resource = { 'service.name': 'copilot-chat', 'copilot_insights.organization.id': ORGANIZATION, 'session.id': 'window-1' };
-const spans = [
+const spans: { spanId: string; operation: string; duration: number; status: number; attributes: Record<string, string | number> }[] = [
   { spanId: AGENT, operation: 'invoke_agent', duration: 4000, status: 0, attributes: {} },
   { spanId: 'b'.repeat(16), operation: 'chat', duration: 1000.25, status: 2,
     attributes: { 'gen_ai.request.model': 'example-model', 'gen_ai.usage.input_tokens': 1200, 'gen_ai.usage.output_tokens': 180, 'gen_ai.conversation.id': 'conversation-1' } },
   { spanId: 'c'.repeat(16), operation: 'execute_tool', duration: 100, status: 1, attributes: { 'gen_ai.tool.name': 'readFile', 'gen_ai.tool.call.id': 'call-1' } },
 ];
 const statusNames = ['STATUS_CODE_UNSET', 'STATUS_CODE_OK', 'STATUS_CODE_ERROR'];
-const iso = (milliseconds) => new Date(milliseconds).toISOString().replace('Z', '0000Z');
-const otlp = (attributes) => Object.entries(attributes).map(([key, value]) => ({ key, value: typeof value === 'number' ? { intValue: String(value) } : { stringValue: value } }));
+const iso = (milliseconds: number) => new Date(milliseconds).toISOString().replace('Z', '0000Z');
+const otlp = (attributes: Record<string, string | number>) => Object.entries(attributes).map(([key, value]) => ({ key, value: typeof value === 'number' ? { intValue: String(value) } : { stringValue: value } }));
 
 // The OTLP records the file adapter would read for the same activity.
 function fileRecords() {
@@ -40,8 +42,8 @@ function fileRecords() {
 }
 
 // The same activity as the azure_monitor exporter stores it: one Properties bag per row.
-function storedRows({ rootParent = '' } = {}) {
-  const properties = (extra) => JSON.stringify({ ...Object.fromEntries(Object.entries({ ...resource, ...extra }).map(([key, value]) => [key, String(value)])),
+function storedRows({ rootParent = '' } = {}): QueryTable {
+  const properties = (extra: Record<string, unknown>) => JSON.stringify({ ...Object.fromEntries(Object.entries({ ...resource, ...extra }).map(([key, value]) => [key, String(value)])),
     'instrumentationlibrary.name': 'copilot-chat' });
   return {
     columns: ['SourceTable', 'TimeGenerated', 'Id', 'OperationId', 'ParentId', 'DurationMs', 'Properties'].map((name) => ({ name })),
@@ -53,19 +55,20 @@ function storedRows({ rootParent = '' } = {}) {
   };
 }
 
-function workspace({ rows = storedRows(), counts = [['AppTraces', 4], ['AppMetrics', 7]], spanBody } = {}) {
-  const calls = { token: 0, queries: [] };
-  const fetcher = async (url, options) => {
+function workspace({ rows = storedRows(), counts = [['AppTraces', 4], ['AppMetrics', 7]], spanBody }: { rows?: QueryTable; counts?: unknown[][]; spanBody?: object } = {}) {
+  const calls = { token: 0, queries: [] as string[] };
+  const fetcher: Fetcher = async (url, options) => {
+    const headers = options.headers as Record<string, string>;
     if (url instanceof URL) {
       calls.token++;
-      assert.equal(options.headers['X-IDENTITY-HEADER'], 'identity-secret');
+      assert.equal(headers['X-IDENTITY-HEADER'], 'identity-secret');
       assert.equal(url.searchParams.get('resource'), 'https://api.loganalytics.io');
       assert.equal(url.searchParams.get('client_id'), 'client-id');
       return { ok: true, json: async () => ({ access_token: 'token', expires_on: String(Math.floor(NOW / 1000) + 3600) }) };
     }
     assert.equal(url, `https://api.loganalytics.io/v1/workspaces/${WORKSPACE}/query`);
-    assert.equal(options.headers.Authorization, 'Bearer token');
-    const { query, timespan } = JSON.parse(options.body);
+    assert.equal(headers.Authorization, 'Bearer token');
+    const { query, timespan } = JSON.parse(options.body as string);
     calls.queries.push(query);
     assert.equal(timespan, 'P32D');
     if (query === spanQuery(ORGANIZATION)) return { ok: true, json: async () => spanBody ?? { tables: [rows] } };
@@ -81,7 +84,7 @@ test('stored Azure Monitor rows normalize exactly like the collector file for th
   const { read } = workspace();
   const stored = await read(ORGANIZATION);
   const file = normalizeRecords(fileRecords(), ORGANIZATION);
-  const byId = (left, right) => left.id.localeCompare(right.id);
+  const byId = (left: Span, right: Span) => left.id.localeCompare(right.id);
   assert.deepEqual(stored.spans.sort(byId), file.spans.sort(byId));
   assert.deepEqual(stored.feedback, file.feedback);
   assert.equal(stored.quality.backend, 'log-analytics');
@@ -132,9 +135,9 @@ test('the service reports and lists projects from the workspace instead of a cap
   const { read, calls } = workspace();
   const server = await createApp({ readCollected: read, telemetryPath: join(directory, 'absent.jsonl'), reviewPath: join(directory, 'reviews.json'),
     organizationId: ORGANIZATION, clock: () => NOW });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const data = await (await fetch(`${base}/api/insights?organization=${ORGANIZATION}`)).json();
   assert.equal(data.summary.totalTokens, 1380);
   assert.equal(data.quality.backend, 'log-analytics');

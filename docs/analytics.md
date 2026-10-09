@@ -25,7 +25,7 @@ Follow the [three-step walkthrough](../README.md#try-it-on-your-machine): deploy
 
 The collector's `CI_ORGANIZATION_ID` and portal's `INSIGHTS_ORGANIZATION_ID` must agree; both are `local-vscode` in Compose. `INSIGHTS_ORGANIZATION_NAME` is the display label. One service handles one collector organization plus, in local mode only, the fictional demo, not arbitrary tenants. Production authorizes administrators for that service organization; the selectors are not authorization boundaries. Never trust a client-supplied organization label.
 
-No host Node installation or Azure account is required for local Docker evaluation. The image builds with pinned Node and npm dependencies; allow approved registry access during the build. MSAL is served from the image in production, not loaded from a CDN; local mode makes no Entra sign-in requests. For native Node development, run `npm ci` in `apps/insights` before `npm start`; avoid the Compose port if it is already running.
+No host Node installation or Azure account is required for local Docker evaluation. The image builds with pinned Node and npm dependencies; allow approved registry access during the build. MSAL is served from the image in production, not loaded from a CDN; local mode makes no Entra sign-in requests. For native Node development, run `npm ci` and `npm run build` in `apps/insights` before `npm start`; avoid the Compose port if it is already running.
 
 ## What you can review
 
@@ -102,19 +102,19 @@ Organization deployment follows the [Intune plan](intune-deployment.md), not emp
 
 ## Implementation and checks
 
-- [Server](../apps/insights/server.mjs): local HTTP boundary, static allow-list, narrow API, and write validation.
-- [Telemetry projection](../apps/insights/lib/telemetry.mjs) and [analytics](../apps/insights/lib/analytics.mjs): incremental JSONL reading, canonical aggregates, and rule-based findings.
-- [Log Analytics source](../apps/insights/lib/loganalytics.mjs): managed-identity queries of the usage workspace for Azure deployments.
-- [Review store](../apps/insights/lib/reviews.mjs): atomic local decisions and revision conflicts.
-- [Frontend](../apps/insights/public/): original HTML/CSS/JavaScript/SVG; production sign-in uses locally served MSAL.
-- [Window registry](../apps/insights/lib/context.mjs), [authorization](../apps/insights/lib/auth.mjs), and [MCP](../apps/insights/lib/mcp.mjs): project attribution and role-protected reports.
+- [Server](../apps/insights/server.ts): local HTTP boundary, static allow-list, narrow API, and write validation.
+- [Telemetry projection](../apps/insights/lib/telemetry.ts) and [analytics](../apps/insights/lib/analytics.ts): incremental JSONL reading, canonical aggregates, and rule-based findings.
+- [Log Analytics source](../apps/insights/lib/loganalytics.ts): managed-identity queries of the usage workspace for Azure deployments.
+- [Review store](../apps/insights/lib/reviews.ts): atomic local decisions and revision conflicts.
+- [Frontend](../apps/insights/web/): TypeScript compiled into the image with the [static HTML/CSS/SVG](../apps/insights/public/); production sign-in uses locally served MSAL. The [API types](../apps/insights/lib/types.ts) are shared by the service and the browser.
+- [Window registry](../apps/insights/lib/context.ts), [authorization](../apps/insights/lib/auth.ts), and [MCP](../apps/insights/lib/mcp.ts): project attribution and role-protected reports.
 - [Regression tests](../apps/insights/tests/): counting, unknown values, replay conflicts, source/project isolation, projection canaries, registration lifecycle, signed-token authorization, MCP clients, host/origin restrictions, and review persistence.
 
 After building the Compose images, run the tests from the repository root:
 
 ```powershell
 docker run --rm --network none --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" copilot-insights-review:local node --test
-docker compose -f deploy/local/compose.yaml exec -T insights node --check public/app.js
+docker compose -f deploy/local/compose.yaml exec -T insights node --check dist/web/app.js
 ```
 
-With a local Node 24+ installation, run `npm --prefix apps/insights ci --ignore-scripts` once, then `npm --prefix apps/insights test` for all service suites. Run `npm --prefix extensions/project-context test` for the isolated extension tests and `./scripts/tests/entra-access.tests.ps1` for mocked role-assignment checks. CI also verifies that one collector fixture produces one model call, one top-level agent run, one tool execution, 1,380 observed tokens, and one intentional error in the analytics API, with no canary leakage. Neither generated-token tests nor mocked Graph responses prove live Entra sign-in or role assignment.
+With a local Node 24+ installation, run `npm --prefix apps/insights ci --ignore-scripts` once, then `npm --prefix apps/insights run typecheck` and `npm --prefix apps/insights test` for all service suites. Node runs the service's TypeScript directly; `typecheck` checks it, the browser code, and the tests. Run `npm --prefix extensions/project-context ci --ignore-scripts` once, then `npm --prefix extensions/project-context test` to compile the companion and run its isolated extension tests, and `./scripts/tests/entra-access.tests.ps1` for mocked role-assignment checks. CI also verifies that one collector fixture produces one model call, one top-level agent run, one tool execution, 1,380 observed tokens, and one intentional error in the analytics API, with no canary leakage. Neither generated-token tests nor mocked Graph responses prove live Entra sign-in or role assignment.

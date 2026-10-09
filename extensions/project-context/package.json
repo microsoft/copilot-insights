@@ -7,11 +7,21 @@
   "license": "MIT",
   "engines": { "vscode": "^1.100.0" },
   "categories": ["Other"],
-  "main": "./extension.cjs",
+  "main": "./out/extension.js",
   "extensionKind": ["workspace"],
   "activationEvents": ["onStartupFinished"],
   "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
-  "scripts": { "test": "node --test tests/*.test.cjs" },
+  "scripts": {
+    "compile": "tsc -p .",
+    "vscode:prepublish": "npm run compile",
+    "pretest": "npm run compile",
+    "test": "node --test out/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.100.0",
+    "typescript": "7.0.2"
+  },
   "contributes": {
     "commands": [
       { "command": "copilotInsights.selectProject", "title": "Copilot Insights: Select Project" },

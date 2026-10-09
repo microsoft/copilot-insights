@@ -1,55 +1,79 @@
-import { apiFetch, initializeAuth } from './auth.js';
+import { apiFetch, initializeAuth } from './auth.ts';
+import type {
+  ErrorResponse, Finding, InsightsResponse, Organization, OrganizationCatalog, Priority, ProjectCatalog, ProjectEntry, Review, ReviewStatus, Source, Span,
+} from '../lib/types.ts';
 
-const byId = (id) => document.getElementById(id);
-const number = (value) => value === null ? '—' : new Intl.NumberFormat().format(value);
-const compact = (value) => value === null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-const percent = (value) => value === null ? '—' : `${(value * 100).toFixed(value === 0 || value === 1 ? 0 : 1)}%`;
-const duration = (value) => value === null ? '—' : value < 1000 ? `${number(value)} ms` : `${(value / 1000).toFixed(1)} s`;
-const dateTime = (value) => value === null ? 'Not available' : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
-const statuses = { unreviewed: 'Needs review', investigating: 'Investigating', reviewed: 'Reviewed', dismissed: 'Dismissed' };
-const newEvidence = (finding) => finding.review.newEvidence && finding.review.status !== 'unreviewed' && badge('New evidence since review', 'priority-medium');
-const priorities = { high: 'High priority', medium: 'Review suggested', low: 'For awareness' };
-const views = {
+type View = 'overview' | 'reviews' | 'models' | 'quality';
+type Child = Node | string | number | boolean | null | undefined | Child[];
+type Header = { label: string; numeric?: boolean };
+
+interface State {
+  source: Source | undefined;
+  organizationId: string | null | undefined;
+  organizations: Organization[];
+  defaultOrganizationId: string | null;
+  projectKey: string;
+  projects: ProjectEntry[];
+  mode: 'local' | 'production';
+  days: number;
+  view: View;
+  data: InsightsResponse | null;
+  error: string | null;
+  scopeError: boolean;
+  reviewStatus: string;
+  search: string;
+}
+
+const byId = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const number = (value: number | null) => value === null ? '—' : new Intl.NumberFormat().format(value);
+const compact = (value: number | null) => value === null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+const percent = (value: number | null) => value === null ? '—' : `${(value * 100).toFixed(value === 0 || value === 1 ? 0 : 1)}%`;
+const duration = (value: number | null) => value === null ? '—' : value < 1000 ? `${number(value)} ms` : `${(value / 1000).toFixed(1)} s`;
+const dateTime = (value: string | number | null) => value === null ? 'Not available' : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+const statuses: Record<ReviewStatus, string> = { unreviewed: 'Needs review', investigating: 'Investigating', reviewed: 'Reviewed', dismissed: 'Dismissed' };
+const newEvidence = (finding: Finding) => finding.review.newEvidence && finding.review.status !== 'unreviewed' && badge('New evidence since review', 'priority-medium');
+const priorities: Record<Priority, string> = { high: 'High priority', medium: 'Review suggested', low: 'For awareness' };
+const views: Record<View, [string, string]> = {
   overview: ['Insights overview', 'A clearer picture of agent activity, with evidence behind every signal.'],
   reviews: ['Human review queue', 'Inspect the evidence. Record a decision. Keep new observations distinct.'],
   models: ['Models & tools', 'Understand observed consumption and execution without double counting.'],
   quality: ['Data quality & coverage', 'Know what is reported, what is missing, and where the boundaries are.'],
 };
 const parameters = new URLSearchParams(location.search);
-const state = {
+const state: State = {
   source: parameters.get('source') === 'local' ? 'local' : 'demo',
   organizationId: parameters.get('organization'), organizations: [], defaultOrganizationId: null,
   projectKey: parameters.get('project') ?? 'all', projects: [], mode: 'local',
   days: [7, 14, 30].includes(Number(parameters.get('days'))) ? Number(parameters.get('days')) : 7,
-  view: Object.keys(views).find((view) => view === parameters.get('view')) ?? 'overview',
+  view: (Object.keys(views) as View[]).find((view) => view === parameters.get('view')) ?? 'overview',
   data: null, error: null, scopeError: false, reviewStatus: 'all', search: '',
 };
-let requestController;
+let requestController: AbortController | undefined;
 let requestVersion = 0;
-let toastTimer;
-let dialogTrigger;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let dialogTrigger: HTMLElement | null;
 
-function element(tag, attributes = {}, ...children) {
+function element<K extends keyof HTMLElementTagNameMap>(tag: K, attributes: Record<string, unknown> = {}, ...children: Child[]) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attributes)) {
-    if (key.startsWith('on')) node.addEventListener(key.slice(2).toLowerCase(), value);
+    if (key.startsWith('on')) node.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
     else if (value !== false && value !== null && value !== undefined) node.setAttribute(key, value === true ? '' : String(value));
   }
-  for (const child of children.flat(Infinity)) {
+  for (const child of (children as unknown[]).flat(Infinity)) {
     if (child !== null && child !== undefined && child !== false) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
   return node;
 }
 
-function svgElement(tag, attributes = {}, ...children) {
+function svgElement<K extends keyof SVGElementTagNameMap>(tag: K, attributes: Record<string, string | number> = {}, ...children: (Node | string)[]) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
   for (const child of children) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   return node;
 }
 
-function icon(name) {
-  const paths = {
+function icon(name: string) {
+  const paths: Record<string, string> = {
     activity: 'M3 12h4l3-7 4 14 3-7h4',
     tokens: 'M12 3 3 8v8l9 5 9-5V8zM3 8l9 5 9-5M12 13v8',
     clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l3 2',
@@ -63,17 +87,17 @@ function icon(name) {
   return svgElement('svg', { viewBox: '0 0 24 24', class: 'small-icon', 'aria-hidden': 'true' }, svgElement('path', { d: paths[name] ?? paths.info }));
 }
 
-function button(label, action, kind = 'secondary', attributes = {}) {
+function button(label: Child, action: (event: Event) => unknown, kind = 'secondary', attributes: Record<string, unknown> = {}) {
   return element('button', { type: 'button', class: `button button-${kind}`, onClick: action, ...attributes }, label);
 }
 
-function badge(text, className) { return element('span', { class: `pill ${className}` }, text); }
-function pending(findings) { return findings.filter((finding) => ['unreviewed', 'investigating'].includes(finding.review.status)); }
-function panelHeading(title, subtitle, action = null) {
+function badge(text: Child, className: string) { return element('span', { class: `pill ${className}` }, text); }
+function pending(findings: Finding[]) { return findings.filter((finding) => ['unreviewed', 'investigating'].includes(finding.review.status)); }
+function panelHeading(title: string, subtitle: string, action: Child = null) {
   return element('div', { class: 'panel-heading' }, element('div', {}, element('h2', {}, title), subtitle && element('p', { class: 'panel-subtitle' }, subtitle)), action);
 }
 
-function table(headers, rows, caption, className = '') {
+function table(headers: Header[], rows: Child[][], caption: string, className = '') {
   return element('div', { class: 'table-scroll' }, element('table', { class: className },
     element('caption', { class: 'visually-hidden' }, caption),
     element('thead', {}, element('tr', {}, headers.map((header) => element('th', { scope: 'col', class: header.numeric ? 'numeric' : '' }, header.label)))),
@@ -81,14 +105,14 @@ function table(headers, rows, caption, className = '') {
   ));
 }
 
-function statCard(label, value, detail, symbol, preciseValue = value) {
+function statCard(label: string, value: string, detail: string, symbol: string, preciseValue = value) {
   return element('article', { class: 'stat-card', 'aria-label': label },
     element('div', { class: 'stat-header' }, label, element('span', { class: 'stat-icon' }, icon(symbol))),
     element('strong', { class: 'stat-value', title: preciseValue }, value), element('p', { class: 'stat-detail' }, detail),
   );
 }
 
-function statsGrid(data) {
+function statsGrid(data: InsightsResponse) {
   const summary = data.summary;
   return element('div', { class: 'stat-grid' },
     statCard('Agent runs', number(summary.agentRuns), `${number(summary.calls)} model calls · ${number(summary.toolCalls)} tool executions`, 'activity'),
@@ -98,7 +122,7 @@ function statsGrid(data) {
   );
 }
 
-function activityChart(data) {
+function activityChart(data: InsightsResponse) {
   const width = 720;
   const base = 172;
   const ceiling = Math.max(4, Math.ceil(Math.max(...data.trend.map((point) => point.calls)) / 4) * 4);
@@ -127,12 +151,12 @@ function activityChart(data) {
     chart, element('div', { class: 'chart-legend' }, element('span', {}, element('i', { class: 'legend-dot' }), 'Model calls'), element('span', {}, element('i', { class: 'legend-dot error' }), 'Reported errors')), details);
 }
 
-function reviewFocus(data) {
+function reviewFocus(data: InsightsResponse) {
   const open = data.findings.filter((finding) => finding.review.status === 'unreviewed').length;
   const active = data.findings.filter((finding) => finding.review.status === 'investigating').length;
   const done = data.findings.length - open - active;
   const progress = element('div', { class: 'review-progress', 'aria-hidden': 'true' });
-  for (const [className, count] of [['open', open], ['active', active], ['done', done]]) {
+  for (const [className, count] of [['open', open], ['active', active], ['done', done]] as const) {
     const part = element('span', { class: className });
     part.style.width = `${data.findings.length ? count / data.findings.length * 100 : 0}%`;
     progress.append(part);
@@ -148,7 +172,7 @@ function reviewFocus(data) {
   );
 }
 
-function findingCard(finding) {
+function findingCard(finding: Finding) {
   return element('article', { class: 'finding-card' },
     element('div', { class: 'finding-top' }, badge(priorities[finding.priority], `priority-${finding.priority}`), element('span', { class: 'finding-category' }, finding.category)),
     element('h3', {}, finding.title), element('p', {}, finding.description),
@@ -158,13 +182,13 @@ function findingCard(finding) {
   );
 }
 
-function coverageRow(label, value) {
+function coverageRow(label: string, value: number | null) {
   const fill = element('span', { class: `coverage-fill ${value === 1 ? 'good' : ''}` });
   fill.style.width = `${value === null ? 0 : value * 100}%`;
   return element('div', { class: 'coverage-row' }, element('span', {}, label), element('strong', {}, percent(value)), element('div', { class: 'coverage-track', 'aria-hidden': 'true' }, fill));
 }
 
-function coveragePanel(data) {
+function coveragePanel(data: InsightsResponse) {
   return element('section', { class: 'panel' }, panelHeading('Collection coverage', 'Unknown is different from zero', button('View data quality', () => changeView('quality'), 'link')),
     element('div', { class: 'coverage-list' },
       coverageRow('Complete token reporting', data.summary.tokenCoverage),
@@ -174,9 +198,9 @@ function coveragePanel(data) {
   );
 }
 
-function modelName(name, index) { return element('span', { class: 'model-name' }, element('i', { class: `model-dot tone-${index % 4}`, 'aria-hidden': 'true' }), name); }
+function modelName(name: string, index: number) { return element('span', { class: 'model-name' }, element('i', { class: `model-dot tone-${index % 4}`, 'aria-hidden': 'true' }), name); }
 
-function modelPreview(data) {
+function modelPreview(data: InsightsResponse) {
   return element('section', { class: 'panel' }, panelHeading('Model mix', 'Observed calls in this window', button('Explore models', () => changeView('models'), 'link')),
     data.models.length ? table([{ label: 'Model' }, { label: 'Calls', numeric: true }, { label: 'Observed tokens', numeric: true }],
       data.models.slice(0, 4).map((model, index) => [modelName(model.name, index), number(model.calls), number(model.totalTokens)]), 'Model calls and observed tokens')
@@ -193,7 +217,7 @@ function noData() {
     button('Check data quality', () => changeView('quality'), 'link'));
 }
 
-function renderOverview(data) {
+function renderOverview(data: InsightsResponse) {
   if (!data.quality.acceptedSpans) return noData();
   const actionable = pending(data.findings);
   return element('div', {}, statsGrid(data), element('div', { class: 'overview-grid' }, activityChart(data), reviewFocus(data)),
@@ -205,7 +229,7 @@ function renderOverview(data) {
   );
 }
 
-function renderReviews(data) {
+function renderReviews(data: InsightsResponse) {
   const results = element('div');
   const resultCount = element('p', { class: 'panel-subtitle', role: 'status' });
   const refreshResults = () => {
@@ -225,8 +249,8 @@ function renderReviews(data) {
       element('p', {}, 'Try another review status or clear your search. An empty queue does not establish successful task completion.')));
   };
   const search = element('input', { type: 'search', placeholder: 'Search signals…', 'aria-label': 'Search signals', value: state.search,
-    onInput: (event) => { state.search = event.target.value; refreshResults(); } });
-  const status = element('select', { 'aria-label': 'Filter by review status', onChange: (event) => { state.reviewStatus = event.target.value; refreshResults(); } },
+    onInput: (event: Event) => { state.search = (event.target as HTMLInputElement).value; refreshResults(); } });
+  const status = element('select', { 'aria-label': 'Filter by review status', onChange: (event: Event) => { state.reviewStatus = (event.target as HTMLSelectElement).value; refreshResults(); } },
     element('option', { value: 'all', selected: state.reviewStatus === 'all' }, 'All decisions'),
     Object.entries(statuses).map(([value, label]) => element('option', { value, selected: state.reviewStatus === value }, label)));
   refreshResults();
@@ -234,7 +258,7 @@ function renderReviews(data) {
     results, element('p', { class: 'small-note' }, 'Reviewed and dismissed are human workflow decisions, not labels of model correctness. No free-text notes or reviewer identities are stored.'));
 }
 
-function renderModels(data) {
+function renderModels(data: InsightsResponse) {
   if (!data.models.length && !data.tools.length) return noData();
   return element('div', { class: 'section-stack' },
     element('section', { class: 'panel' }, panelHeading('Model consumption & reliability', `${number(data.summary.calls)} canonical model spans in this window`, element('span', { class: 'subtle-label' }, 'Span-derived')),
@@ -248,13 +272,13 @@ function renderModels(data) {
   );
 }
 
-function facts(entries) {
+function facts(entries: [string, Child][]) {
   return element('dl', { class: 'fact-list' }, entries.flatMap(([label, value]) => [element('dt', {}, label), element('dd', {}, value)]));
 }
 
-function renderQuality(data) {
+function renderQuality(data: InsightsResponse) {
   const quality = data.quality;
-  const tile = (label, value, description) => element('article', { class: 'quality-tile' }, element('h3', {}, label), element('strong', {}, value), element('p', {}, description));
+  const tile = (label: string, value: string, description: string) => element('article', { class: 'quality-tile' }, element('h3', {}, label), element('strong', {}, value), element('p', {}, description));
   return element('div', { class: 'section-stack' },
     element('div', { class: 'quality-grid' },
       tile('Complete token reporting', percent(data.summary.tokenCoverage), `${number(data.summary.completeTokenCalls)} of ${number(data.summary.calls)} model calls report both token counts. Partial totals stay labeled as observed.`),
@@ -306,7 +330,7 @@ function renderQuality(data) {
   );
 }
 
-function spanCorrelation(span, source) {
+function spanCorrelation(span: Span, source: Source) {
   return element('details', { class: 'correlation-details' }, element('summary', {}, 'IDs & trace'), facts([
     ['Trace ID', span.traceId], ['Span ID', span.spanId], ['Parent span ID', span.parentSpanId ?? 'Not reported'],
     ['Conversation ID', span.conversationId ?? 'Not reported'], ['Window/session ID', span.sessionId ?? 'Not reported'],
@@ -315,10 +339,10 @@ function spanCorrelation(span, source) {
     : source === 'demo' ? 'Synthetic trace; not sent to a collector' : 'Use your approved trace viewer for this trace ID.');
 }
 
-function openReview(finding) {
-  dialogTrigger = document.activeElement;
-  const dialog = byId('review-dialog');
-  const data = state.data;
+function openReview(finding: Finding) {
+  dialogTrigger = document.activeElement as HTMLElement | null;
+  const dialog = byId<HTMLDialogElement>('review-dialog');
+  const data = state.data!;
   const close = button('×', () => dialog.close(), 'quiet', { class: 'close-button', 'aria-label': 'Close evidence review' });
   const sourceLabel = `${data.organization.name} · ${data.project.name} · ${data.source === 'demo' ? 'Synthetic example, not real usage' : 'Collector snapshot'}`;
   const evidenceRows = finding.evidence.map((span) => [
@@ -331,7 +355,7 @@ function openReview(finding) {
   ]);
   const decision = element('select', { id: 'review-decision' }, Object.entries(statuses).map(([value, label]) => element('option', { value, selected: finding.review.status === value }, label)));
   const errorArea = element('div', { role: 'alert' });
-  const save = button('Save decision', async () => {
+  const save: HTMLButtonElement = button('Save decision', async () => {
     save.disabled = true;
     decision.disabled = true;
     errorArea.replaceChildren();
@@ -340,14 +364,14 @@ function openReview(finding) {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Review-Token': data.reviewToken },
         body: JSON.stringify({ organizationId: data.organizationId, projectKey: data.projectKey, days: data.window.days, findingId: finding.id, status: decision.value, expectedRevision: finding.review.revision }),
       });
-      const result = await response.json();
+      const result: { review: Review } & Partial<ErrorResponse> = await response.json();
       if (!response.ok) throw new Error(result.error?.message ?? 'The decision could not be saved.');
       finding.review = result.review;
       if (dialog.open) dialog.close();
       render();
       notify(`Decision saved: ${statuses[result.review.status]}.`);
     } catch (error) {
-      errorArea.replaceChildren(element('p', { class: 'inline-error' }, error.message), button('Refresh evidence', () => { dialog.close(); loadData(); }, 'link'));
+      errorArea.replaceChildren(element('p', { class: 'inline-error' }, (error as Error).message), button('Refresh evidence', () => { dialog.close(); loadData(); }, 'link'));
     } finally {
       save.disabled = false;
       decision.disabled = false;
@@ -376,12 +400,12 @@ function openReview(finding) {
 function updateChrome() {
   byId('page-title').textContent = views[state.view][0];
   byId('page-description').textContent = views[state.view][1];
-  byId('organization-selector').value = state.organizationId ?? '';
-  byId('organization-selector').disabled = !state.organizations.length;
-  byId('project-selector').value = state.projectKey;
-  byId('project-selector').disabled = !state.projects.length;
-  document.querySelectorAll('[data-days]').forEach((node) => node.setAttribute('aria-pressed', String(Number(node.dataset.days) === state.days)));
-  document.querySelectorAll('[data-view]').forEach((node) => {
+  byId<HTMLSelectElement>('organization-selector').value = state.organizationId ?? '';
+  byId<HTMLSelectElement>('organization-selector').disabled = !state.organizations.length;
+  byId<HTMLSelectElement>('project-selector').value = state.projectKey;
+  byId<HTMLSelectElement>('project-selector').disabled = !state.projects.length;
+  document.querySelectorAll<HTMLElement>('[data-days]').forEach((node) => node.setAttribute('aria-pressed', String(Number(node.dataset.days) === state.days)));
+  document.querySelectorAll<HTMLElement>('[data-view]').forEach((node) => {
     const selected = node.dataset.view === state.view;
     node.setAttribute('aria-selected', String(selected));
     node.tabIndex = selected ? 0 : -1;
@@ -423,12 +447,12 @@ function render() {
   }
 }
 
-function changeView(view) {
+function changeView(view: View) {
   state.view = view;
   render();
 }
 
-function changeOrganization(organizationId) {
+function changeOrganization(organizationId: string | null) {
   state.organizationId = organizationId;
   state.projectKey = 'all';
   state.projects = [];
@@ -446,13 +470,13 @@ async function loadData() {
   state.data = null;
   state.error = null;
   state.scopeError = false;
-  byId('refresh-button').disabled = true;
+  byId<HTMLButtonElement>('refresh-button').disabled = true;
   byId('view-panel').setAttribute('aria-busy', 'true');
   render();
   try {
     if (!state.organizations.length) {
       const catalogResponse = await apiFetch('/api/organizations', { signal: controller.signal });
-      const catalog = await catalogResponse.json();
+      const catalog: OrganizationCatalog = await catalogResponse.json();
       if (!catalogResponse.ok || !Array.isArray(catalog.organizations)) throw new Error('The organization catalog is unavailable. No substitute data is shown.');
       if (version !== requestVersion) return;
       state.organizations = catalog.organizations;
@@ -463,18 +487,18 @@ async function loadData() {
         state.organizationId = legacySource ? catalog.organizations.find((entry) => entry.source === legacySource)?.id : catalog.defaultOrganizationId;
       }
     }
-    const scopeError = (message) => Object.assign(new Error(message), { scope: true });
+    const scopeError = (message: string) => Object.assign(new Error(message), { scope: true });
     const selected = state.organizations.find((entry) => entry.id === state.organizationId);
     if (!selected) throw scopeError('This organization is not configured. Choose an organization from the list.');
     state.source = selected.source;
-    const projectResponse = await apiFetch(`/api/projects?${new URLSearchParams({ organization: state.organizationId })}`, { signal: controller.signal });
-    const catalog = await projectResponse.json();
+    const projectResponse = await apiFetch(`/api/projects?${new URLSearchParams({ organization: state.organizationId! })}`, { signal: controller.signal });
+    const catalog: ProjectCatalog = await projectResponse.json();
     if (!projectResponse.ok || !Array.isArray(catalog.projects) || catalog.organizationId !== state.organizationId) throw new Error('The project catalog is unavailable. No substitute scope is selected.');
     if (version !== requestVersion) return;
     state.projects = catalog.projects;
     byId('project-selector').replaceChildren(...catalog.projects.map((entry) => element('option', { value: entry.id }, entry.name)));
     if (!catalog.projects.some((entry) => entry.id === state.projectKey)) throw scopeError('This project is not available in the selected organization. Choose a project from the list.');
-    const query = new URLSearchParams({ organization: state.organizationId, project: state.projectKey, days: String(state.days) });
+    const query = new URLSearchParams({ organization: state.organizationId!, project: state.projectKey, days: String(state.days) });
     const response = await apiFetch(`/api/insights?${query}`, { signal: controller.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message ?? 'The local insights service could not return a snapshot.');
@@ -482,51 +506,52 @@ async function loadData() {
     if (version !== requestVersion) return;
     state.data = data;
   } catch (error) {
-    if (error.name === 'AbortError' || version !== requestVersion) return;
-    state.error = error.message;
-    state.scopeError = Boolean(error.scope);
+    const failure = error as Error & { scope?: boolean };
+    if (failure.name === 'AbortError' || version !== requestVersion) return;
+    state.error = failure.message;
+    state.scopeError = Boolean(failure.scope);
   } finally {
     if (version === requestVersion) {
-      byId('refresh-button').disabled = false;
+      byId<HTMLButtonElement>('refresh-button').disabled = false;
       byId('view-panel').setAttribute('aria-busy', 'false');
       render();
     }
   }
 }
 
-function notify(message) {
+function notify(message: string) {
   clearTimeout(toastTimer);
   byId('toast').textContent = message;
   toastTimer = setTimeout(() => { byId('toast').textContent = ''; }, 5000);
 }
 
-byId('organization-selector').addEventListener('change', (event) => changeOrganization(event.target.value));
-byId('project-selector').addEventListener('change', (event) => { state.projectKey = event.target.value; state.reviewStatus = 'all'; state.search = ''; loadData(); });
+byId('organization-selector').addEventListener('change', (event) => changeOrganization((event.target as HTMLSelectElement).value));
+byId('project-selector').addEventListener('change', (event) => { state.projectKey = (event.target as HTMLSelectElement).value; state.reviewStatus = 'all'; state.search = ''; loadData(); });
 byId('refresh-button').addEventListener('click', loadData);
-document.querySelectorAll('[data-days]').forEach((node) => node.addEventListener('click', () => { state.days = Number(node.dataset.days); loadData(); }));
-const tabs = [...document.querySelectorAll('[data-view]')];
+document.querySelectorAll<HTMLElement>('[data-days]').forEach((node) => node.addEventListener('click', () => { state.days = Number(node.dataset.days); loadData(); }));
+const tabs = [...document.querySelectorAll<HTMLElement>('[data-view]')];
 tabs.forEach((node, index) => {
-  node.addEventListener('click', () => changeView(node.dataset.view));
+  node.addEventListener('click', () => changeView(node.dataset.view as View));
   node.addEventListener('keydown', (event) => {
-    let target;
+    let target: HTMLElement | undefined;
     if (event.key === 'ArrowRight') target = tabs[(index + 1) % tabs.length];
     if (event.key === 'ArrowLeft') target = tabs[(index + tabs.length - 1) % tabs.length];
     if (event.key === 'Home') target = tabs[0];
     if (event.key === 'End') target = tabs[tabs.length - 1];
-    if (target) { event.preventDefault(); changeView(target.dataset.view); target.focus(); }
+    if (target) { event.preventDefault(); changeView(target.dataset.view as View); target.focus(); }
   });
 });
 byId('review-dialog').addEventListener('close', () => {
   queueMicrotask(() => {
-    const replacement = [...document.querySelectorAll('button[aria-label]')].find((node) => node.getAttribute('aria-label') === dialogTrigger?.getAttribute('aria-label'));
+    const replacement = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((node) => node.getAttribute('aria-label') === dialogTrigger?.getAttribute('aria-label'));
     (dialogTrigger?.isConnected ? dialogTrigger : replacement ?? byId(`tab-${state.view}`)).focus();
   });
 });
-byId('policy-button').addEventListener('click', () => { byId('policy-dialog').showModal(); byId('policy-title').focus(); });
-byId('close-policy').addEventListener('click', () => byId('policy-dialog').close());
+byId('policy-button').addEventListener('click', () => { byId<HTMLDialogElement>('policy-dialog').showModal(); byId('policy-title').focus(); });
+byId('close-policy').addEventListener('click', () => byId<HTMLDialogElement>('policy-dialog').close());
 byId('policy-dialog').addEventListener('close', () => byId('policy-button').focus());
 for (const dialogId of ['review-dialog', 'policy-dialog']) {
-  const dialog = byId(dialogId);
+  const dialog = byId<HTMLDialogElement>(dialogId);
   dialog.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') { event.preventDefault(); dialog.close(); }
   });

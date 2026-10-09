@@ -1,17 +1,32 @@
-const PROJECT_PATH = '.copilot-insights/project.json';
-const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+import type { WorkspaceConfiguration } from 'vscode';
+
+export interface Connection {
+  endpoint: string;
+  authentication: 'local' | 'entra';
+  scopes: string[];
+}
+
+export interface Registration {
+  sessionId: string;
+  status: 'active' | 'unattributed' | 'reload-required';
+}
+
+export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
+
+export const PROJECT_PATH = '.copilot-insights/project.json';
+export const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const guid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
-function projectFromDocument(text) {
+export function projectFromDocument(text: string | undefined): string | null {
   try {
-    const value = JSON.parse(text);
+    const value = JSON.parse(text as string);
     return value && typeof value.project === 'string' && identifier.test(value.project) ? value.project : null;
   } catch { return null; }
 }
 
-function connectionSettings(configuration) {
-  const read = (key) => configuration.inspect(key)?.globalValue ?? configuration.inspect(key)?.defaultValue;
-  const endpoint = new URL(read('endpoint'));
+export function connectionSettings(configuration: Pick<WorkspaceConfiguration, 'inspect'>): Connection {
+  const read = (key: string) => configuration.inspect<string>(key)?.globalValue ?? configuration.inspect<string>(key)?.defaultValue;
+  const endpoint = new URL(read('endpoint') as string);
   const authentication = read('authentication');
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/') throw new Error('Configure only the Insights service origin, without a path or credentials.');
   if (authentication === 'local') {
@@ -29,7 +44,8 @@ function connectionSettings(configuration) {
   return { endpoint: endpoint.origin, authentication, scopes: [`api://${audience}/Context.Publish`, `VSCODE_CLIENT_ID:${clientId}`, `VSCODE_TENANT:${tenantId}`] };
 }
 
-async function publishWindow(connection, sessionId, project, token, fetcher = fetch) {
+export async function publishWindow(connection: Connection, sessionId: string, project: string | null, token: string | undefined,
+  fetcher: Fetcher = fetch): Promise<Registration> {
   if (connection.authentication === 'entra' && !token) throw new Error('Sign in to register this window. The Insights.Publisher role is required.');
   const response = await fetcher(`${connection.endpoint}/api/context/windows`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
@@ -46,5 +62,3 @@ async function publishWindow(connection, sessionId, project, token, fetcher = fe
   if (!['active', 'unattributed', 'reload-required'].includes(result.status) || result.sessionId !== sessionId) throw new Error('The service returned an invalid registration response.');
   return result;
 }
-
-module.exports = { PROJECT_PATH, projectFromDocument, connectionSettings, publishWindow, identifier };

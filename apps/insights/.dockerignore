@@ -1,8 +1,10 @@
 *
 !package.json
 !package-lock.json
-!server.mjs
+!server.ts
 !lib/
 !lib/**
 !public/
 !public/**
+!web/
+!web/**

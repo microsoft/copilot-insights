@@ -1,13 +1,41 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { PROJECT_KEY_PATTERN } from './context.mjs';
-import { AppError } from './errors.mjs';
+import { PROJECT_KEY_PATTERN } from './context.ts';
+import { AppError } from './errors.ts';
+import type { ReviewStatus, Source } from './types.ts';
 
-export const REVIEW_STATUSES = ['unreviewed', 'investigating', 'reviewed', 'dismissed'];
+export interface Evidence {
+  count: number;
+  latestAt: number | null;
+}
+
+interface Decision {
+  id: string;
+  source: Source;
+  status: ReviewStatus;
+  organizationId: string | null;
+  projectKey: string | null;
+  evidence: Evidence | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface StoredReview {
+  status: ReviewStatus;
+  revision: number;
+  updatedAt: string | null;
+  evidence: Evidence | null;
+}
+
+export const REVIEW_STATUSES: ReviewStatus[] = ['unreviewed', 'investigating', 'reviewed', 'dismissed'];
 export const MAX_DECISIONS = 2000;
 
 export class ReviewStore {
-  constructor(path) {
+  path: string;
+  decisions: Map<string, Decision>;
+  queue: Promise<unknown>;
+
+  constructor(path: string) {
     this.path = path;
     this.decisions = new Map();
     this.queue = Promise.resolve();
@@ -37,23 +65,24 @@ export class ReviewStore {
         });
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') throw new AppError('review-storage-unavailable', 'Review state cannot be read. Restore or explicitly reset the local review volume.');
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AppError('review-storage-unavailable', 'Review state cannot be read. Restore or explicitly reset the local review volume.');
     }
   }
 
-  get(id, organizationId, projectKey) {
+  get(id: string, organizationId?: string | null, projectKey?: string | null): StoredReview {
     const decision = this.decisions.get(id);
     return decision && (organizationId === undefined || decision.organizationId === organizationId)
       && (projectKey === undefined || decision.projectKey === projectKey) ? { status: decision.status, revision: decision.revision, updatedAt: decision.updatedAt, evidence: decision.evidence }
       : { status: 'unreviewed', revision: 0, updatedAt: null, evidence: null };
   }
 
-  update(id, source, status, expectedRevision, organizationId = null, projectKey = null, evidence = null) {
+  update(id: string, source: Source, status: ReviewStatus, expectedRevision: number, organizationId: string | null = null,
+    projectKey: string | null = null, evidence: Evidence | null = null): Promise<StoredReview> {
     const operation = this.queue.catch(() => {}).then(async () => {
       if (this.get(id, organizationId, projectKey).revision !== expectedRevision) {
         throw new AppError('review-conflict', 'This decision changed. Refresh the evidence before saving again.', 409);
       }
-      const decision = { id, source, organizationId, projectKey, evidence, status, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
+      const decision: Decision = { id, source, organizationId, projectKey, evidence, status, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
       const next = new Map(this.decisions);
       next.set(id, decision);
       const retained = [...next.values()].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)).slice(0, MAX_DECISIONS);

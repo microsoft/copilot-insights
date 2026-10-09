@@ -3,21 +3,35 @@ import { appendFile, mkdtemp, open, readFile, rename, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
-import test from 'node:test';
-import { composeInsights, percentile } from '../lib/analytics.mjs';
-import { demoTelemetry } from '../lib/demo.mjs';
-import { ReviewStore } from '../lib/reviews.mjs';
-import { MAX_INPUT_BYTES, normalizeRecords, readTelemetry } from '../lib/telemetry.mjs';
-import { createApp } from '../server.mjs';
+import type { AddressInfo } from 'node:net';
+import test, { type TestContext } from 'node:test';
+import { composeInsights, percentile } from '../lib/analytics.ts';
+import { demoTelemetry } from '../lib/demo.ts';
+import type { AppError } from '../lib/errors.ts';
+import { ReviewStore } from '../lib/reviews.ts';
+import { MAX_INPUT_BYTES, normalizeRecords, readTelemetry } from '../lib/telemetry.ts';
+import type { Feedback, InsightsResponse, OrganizationCatalog } from '../lib/types.ts';
+import { createApp } from '../server.ts';
+
+interface Attribute { key: string; value: { stringValue?: unknown; intValue?: unknown } }
+interface SpanRecord {
+  traceId: string; spanId: string; parentSpanId?: string; startTimeUnixNano: string; endTimeUnixNano: string;
+  attributes: Attribute[]; status: { code: number; message?: string }; events?: object[]; links?: object[];
+}
+interface OtlpRecord {
+  resourceSpans: { resource: { attributes: Attribute[] }; scopeSpans: { scope: { name: string }; spans: SpanRecord[] }[] }[];
+  resourceMetrics?: object[];
+  resourceLogs?: object[];
+}
 
 const NOW = Date.parse('2026-10-02T22:00:00.000Z');
-const attr = (key, value) => ({ key, value: typeof value === 'number' ? { intValue: String(value) } : { stringValue: value } });
-const nano = (milliseconds) => String(BigInt(milliseconds) * 1_000_000n);
+const attr = (key: string, value: string | number) => ({ key, value: typeof value === 'number' ? { intValue: String(value) } : { stringValue: value } });
+const nano = (milliseconds: number) => String(BigInt(milliseconds) * 1_000_000n);
 const resource = { attributes: [attr('service.name', 'copilot-chat'), attr('copilot_insights.organization.id', 'local-dev')] };
 
-function fixture() {
+function fixture(): OtlpRecord {
   const agentId = 'a'.repeat(16);
-  const span = (operation, spanId, duration, attributes) => ({
+  const span = (operation: string, spanId: string, duration: number, attributes: Attribute[]): SpanRecord => ({
     traceId: '1'.repeat(32), spanId,
     ...(operation === 'invoke_agent' ? {} : { parentSpanId: agentId }),
     startTimeUnixNano: nano(NOW - duration - 1000), endTimeUnixNano: nano(NOW - 1000),
@@ -31,11 +45,12 @@ function fixture() {
   ] }] }] };
 }
 
-const modelSpan = (record) => record.resourceSpans[0].scopeSpans[0].spans[1];
-const project = (records) => ({ ...normalizeRecords(records), pendingRecord: false, missing: false });
-const insights = (records, options = {}) => composeInsights(project(records), { now: NOW, ...options });
+const modelSpan = (record: OtlpRecord) => record.resourceSpans[0].scopeSpans[0].spans[1];
+const project = (records: OtlpRecord[]) => ({ ...normalizeRecords(records), pendingRecord: false, missing: false });
+const insights = (records: OtlpRecord[], options: Parameters<typeof composeInsights>[1] = {}) => composeInsights(project(records), { now: NOW, ...options });
+const partialFeedback = (items: Partial<Feedback>[]) => items as Feedback[];
 
-async function temporary(context) {
+async function temporary(context: TestContext) {
   const path = await mkdtemp(join(tmpdir(), 'copilot-insights-test-'));
   context.after(() => rm(path, { recursive: true, force: true }));
   return path;
@@ -92,7 +107,7 @@ test('explicit errors create inspectable evidence without raw exception details'
   const data = insights([record]);
   const finding = data.findings.find((entry) => entry.kind === 'model-errors');
   assert.equal(data.summary.errorRate, 1);
-  assert.equal(finding.evidence[0].parentSpanId, 'a'.repeat(16));
+  assert.equal(finding!.evidence[0].parentSpanId, 'a'.repeat(16));
   assert.ok(!JSON.stringify(data).includes('PRIVATE-CANARY'));
 });
 
@@ -103,13 +118,13 @@ test('missing token fields remain unknown; known partial totals have explicit co
   assert.equal(data.summary.outputTokens, null);
   assert.equal(data.summary.totalTokens, 1200);
   assert.equal(data.summary.tokenCoverage, 0);
-  assert.equal(data.findings.find((finding) => finding.kind === 'token-coverage').evidenceCount, 1);
+  assert.equal(data.findings.find((finding) => finding.kind === 'token-coverage')!.evidenceCount, 1);
 });
 
 test('unsafe, negative, fractional, and non-scalar token counts are unknown', () => {
   for (const value of ['9007199254740992', '-1', '1.5', '', { secret: 'PRIVATE-CANARY-value' }]) {
     const record = fixture();
-    modelSpan(record).attributes.find((entry) => entry.key === 'gen_ai.usage.input_tokens').value = { intValue: value };
+    modelSpan(record).attributes.find((entry) => entry.key === 'gen_ai.usage.input_tokens')!.value = { intValue: value };
     assert.equal(insights([record]).summary.inputTokens, null);
   }
 });
@@ -124,7 +139,7 @@ test('invalid durations are unknown; nearest-rank percentile is explicit', () =>
 
 test('source, organization, supported operations, and valid correlation IDs are required', () => {
   const record = fixture();
-  assert.equal(composeInsights({ ...normalizeRecords([record], 'another-example'), pendingRecord: false }, { now: NOW }).summary.calls, 0);
+  assert.equal(composeInsights({ ...normalizeRecords([record], 'another-example'), pendingRecord: false, missing: false }, { now: NOW }).summary.calls, 0);
   record.resourceSpans[0].scopeSpans[0].scope.name = 'unsupported';
   assert.equal(insights([record]).quality.acceptedSpans, 0);
   const invalid = fixture();
@@ -136,7 +151,7 @@ test('projection never exposes excluded attributes, identities, paths, bodies, e
   const record = fixture();
   const model = modelSpan(record);
   model.attributes.push(attr('gen_ai.input.messages', 'PRIVATE-CANARY-prompt'), attr('user.email', 'PRIVATE-CANARY@example.invalid'));
-  model.attributes.find((entry) => entry.key === 'gen_ai.request.model').value.stringValue = 'https://private.example.invalid/PRIVATE-CANARY-model';
+  model.attributes.find((entry) => entry.key === 'gen_ai.request.model')!.value.stringValue = 'https://private.example.invalid/PRIVATE-CANARY-model';
   model.events = [{ name: 'PRIVATE-CANARY-event' }];
   model.links = [{ attributes: [attr('private', 'PRIVATE-CANARY-link')] }];
   record.resourceSpans[0].resource = { attributes: [...resource.attributes, attr('host.name', 'PRIVATE-CANARY-host')] };
@@ -160,7 +175,7 @@ test('UTC windows and future timestamps do not fabricate current activity', () =
 test('review identities stay stable as evidence and UTC days change, and are isolated by source and window', () => {
   const demo = demoTelemetry(NOW);
   assert.deepEqual(demo, demoTelemetry(NOW));
-  const signal = (data) => data.findings.find((finding) => finding.kind === 'unknown-outcomes');
+  const signal = (data: ReturnType<typeof insights>) => data.findings.find((finding) => finding.kind === 'unknown-outcomes')!;
   const first = signal(insights([fixture()]));
   assert.equal(first.id, signal(insights([fixture()])).id);
   assert.notEqual(first.id, signal(insights([fixture()], { source: 'demo' })).id);
@@ -203,7 +218,7 @@ test('the JSONL reader parses only appended records and starts over after trunca
   await writeFile(path, `${JSON.stringify(rewritten)}\n`);
   const sameSize = await readTelemetry(path);
   assert.equal(sameSize.quality.conflictingSpans, 0);
-  assert.equal(sameSize.spans.find((span) => span.spanId === 'b'.repeat(16)).timestamp, NOW - 999);
+  assert.equal(sameSize.spans.find((span) => span.spanId === 'b'.repeat(16))!.timestamp, NOW - 999);
   await writeFile(join(directory, 'replacement.jsonl'), `${JSON.stringify(fixture())}\n${JSON.stringify(second)}\n`);
   await rename(join(directory, 'replacement.jsonl'), path);
   assert.equal((await readTelemetry(path)).spans.length, 6);
@@ -213,7 +228,7 @@ test('malformed complete records fail closed without returning source content or
   const directory = await temporary(context);
   const path = join(directory, 'PRIVATE-CANARY-file.jsonl');
   await writeFile(path, '{PRIVATE-CANARY-broken}\n');
-  await assert.rejects(readTelemetry(path), (error) => error.code === 'invalid-telemetry' && !error.message.includes('PRIVATE-CANARY'));
+  await assert.rejects(readTelemetry(path), (error: AppError) => error.code === 'invalid-telemetry' && !error.message.includes('PRIVATE-CANARY'));
   await writeFile(path, '{"resourceSpans":{}}\n');
   await assert.rejects(readTelemetry(path), { code: 'invalid-telemetry' });
 });
@@ -226,7 +241,7 @@ test('decisions persist atomically across store reloads and reject concurrent st
   const id = 'a'.repeat(24);
   const results = await Promise.allSettled([store.update(id, 'local', 'reviewed', 0), store.update(id, 'local', 'dismissed', 0)]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
-  assert.equal(results.find((result) => result.status === 'rejected').reason.status, 409);
+  assert.equal(results.find((result) => result.status === 'rejected')!.reason.status, 409);
   const restored = new ReviewStore(path);
   await restored.load();
   assert.equal(restored.get(id).status, 'reviewed');
@@ -236,21 +251,21 @@ test('decisions persist atomically across store reloads and reject concurrent st
   assert.deepEqual(Object.keys(saved.decisions[0]).sort(), ['evidence', 'id', 'organizationId', 'projectKey', 'revision', 'source', 'status', 'updatedAt']);
 });
 
-async function service(context, withData = true) {
+async function service(context: TestContext, withData = true) {
   const directory = await temporary(context);
   const telemetryPath = join(directory, 'telemetry.jsonl');
   if (withData) await writeFile(telemetryPath, `${JSON.stringify(fixture())}\n`);
   const server = await createApp({ telemetryPath, reviewPath: join(directory, 'reviews.json'), organizationId: 'local-dev', clock: () => NOW });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  return { base: `http://127.0.0.1:${server.address().port}`, telemetryPath };
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, telemetryPath };
 }
 
 test('an empty selected organization never falls back to demo and keeps privacy headers', async (context) => {
   const { base } = await service(context, false);
   const response = await fetch(`${base}/api/insights?organization=local-dev`);
   assert.equal(response.status, 200);
-  assert.match(response.headers.get('content-security-policy'), /connect-src 'self'/);
+  assert.match(response.headers.get('content-security-policy')!, /connect-src 'self'/);
   assert.equal(response.headers.get('access-control-allow-origin'), null);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   const data = await response.json();
@@ -273,7 +288,7 @@ test('HTTP boundary rejects foreign hosts, origins, arbitrary files, and unsuppo
   });
   assert.equal(foreignHostStatus, 403);
   assert.equal((await fetch(`${base}/api/insights`, { headers: { Origin: 'https://example.invalid' } })).status, 403);
-  for (const path of ['/telemetry.jsonl', '/state/reviews.json', '/server.mjs', '/lib/telemetry.mjs', '/%2e%2e/package.json']) {
+  for (const path of ['/telemetry.jsonl', '/state/reviews.json', '/server.ts', '/lib/telemetry.ts', '/%2e%2e/package.json']) {
     assert.equal((await fetch(`${base}${path}`)).status, 404);
   }
   assert.equal((await fetch(`${base}/api/insights?source=private`)).status, 400);
@@ -286,7 +301,7 @@ test('review API requires same-origin token, validates enums, and keeps decision
   const data = await (await fetch(`${base}/api/insights?source=local`)).json();
   const body = { source: 'local', days: 7, findingId: data.findings[0].id, status: 'reviewed', expectedRevision: 0 };
   const headers = { 'Content-Type': 'application/json', Origin: base, 'X-Review-Token': data.reviewToken };
-  const post = (payload, requestHeaders = headers) => fetch(`${base}/api/reviews`, { method: 'POST', headers: requestHeaders, body: JSON.stringify(payload) });
+  const post = (payload: object, requestHeaders: Record<string, string> = headers) => fetch(`${base}/api/reviews`, { method: 'POST', headers: requestHeaders, body: JSON.stringify(payload) });
   assert.equal((await post(body, { 'Content-Type': 'application/json' })).status, 403);
   assert.equal((await post(body, { ...headers, Origin: 'https://example.invalid' })).status, 403);
   assert.equal((await post({ ...body, note: 'PRIVATE-CANARY-free-text' })).status, 400);
@@ -334,7 +349,7 @@ test('large local inputs are rejected before parsing and token totals cannot sil
   await handle.close();
   await assert.rejects(readTelemetry(path), { code: 'input-too-large' });
   const record = fixture();
-  modelSpan(record).attributes.find((entry) => entry.key === 'gen_ai.usage.input_tokens').value.intValue = String(Number.MAX_SAFE_INTEGER);
+  modelSpan(record).attributes.find((entry) => entry.key === 'gen_ai.usage.input_tokens')!.value.intValue = String(Number.MAX_SAFE_INTEGER);
   assert.throws(() => insights([record]), { code: 'unsafe-aggregate' });
 });
 
@@ -342,7 +357,7 @@ test('corrupt review state fails closed and failed writes do not mark findings a
   const directory = await temporary(context);
   const path = join(directory, 'state.json');
   await writeFile(path, 'PRIVATE-CANARY-state');
-  await assert.rejects(new ReviewStore(path).load(), (error) => error.code === 'review-storage-unavailable' && !error.message.includes('PRIVATE-CANARY'));
+  await assert.rejects(new ReviewStore(path).load(), (error: AppError) => error.code === 'review-storage-unavailable' && !error.message.includes('PRIVATE-CANARY'));
   const store = new ReviewStore(join(path, 'reviews.json'));
   await assert.rejects(store.update('b'.repeat(24), 'local', 'reviewed', 0), { code: 'review-write-failed' });
   assert.equal(store.get('b'.repeat(24)).status, 'unreviewed');
@@ -350,7 +365,7 @@ test('corrupt review state fails closed and failed writes do not mark findings a
 
 test('organization catalog defaults to a fictional demo and keeps native data separate', async (context) => {
   const { base, telemetryPath } = await service(context, false);
-  const catalog = await (await fetch(`${base}/api/organizations`)).json();
+  const catalog: OrganizationCatalog = await (await fetch(`${base}/api/organizations`)).json();
   assert.equal(catalog.defaultOrganizationId, 'synthetic-demo');
   assert.deepEqual(catalog.organizations.map((entry) => entry.id), ['synthetic-demo', 'local-dev']);
   const demoBefore = await (await fetch(`${base}/api/insights`)).json();
@@ -397,14 +412,14 @@ test('reviews require the selected organization and cannot transfer to the demo'
   const data = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
   const body = { organizationId: 'local-dev', days: 7, findingId: data.findings[0].id, status: 'reviewed', expectedRevision: 0 };
   const headers = { 'Content-Type': 'application/json', Origin: base, 'X-Review-Token': data.reviewToken };
-  const post = (payload) => fetch(`${base}/api/reviews`, { method: 'POST', headers, body: JSON.stringify(payload) });
+  const post = (payload: object) => fetch(`${base}/api/reviews`, { method: 'POST', headers, body: JSON.stringify(payload) });
   assert.equal((await post({ ...body, organizationId: 'foreign-org' })).status, 400);
   assert.equal((await post({ ...body, organizationId: 'synthetic-demo' })).status, 409);
   assert.equal((await post({ ...body, source: 'demo' })).status, 400);
   assert.equal((await post(body)).status, 200);
   const native = await (await fetch(`${base}/api/insights?organization=local-dev`)).json();
   assert.equal(native.findings[0].review.status, 'reviewed');
-  const demo = await (await fetch(`${base}/api/insights?organization=synthetic-demo`)).json();
+  const demo: InsightsResponse = await (await fetch(`${base}/api/insights?organization=synthetic-demo`)).json();
   assert.ok(demo.findings.every((finding) => finding.review.status === 'unreviewed'));
 });
 
@@ -421,7 +436,7 @@ test('legacy review state is preserved but does not silently acquire an organiza
   const saved = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(saved.version, 5);
   assert.equal(saved.decisions.length, 2);
-  assert.equal(saved.decisions.find((decision) => decision.id === id).organizationId, null);
+  assert.equal(saved.decisions.find((decision: { id: string }) => decision.id === id).organizationId, null);
 });
 
 test('pre-project review scopes stay stored without matching a project filter', async (context) => {
@@ -464,12 +479,12 @@ test('correlation does not join foreign traces, windows, sessions or malformed l
   modelSpan(record).traceId = '2'.repeat(32);
   modelSpan(record).attributes.push(attr('gen_ai.conversation.id', 'private@example.invalid'));
   const normalized = normalizeRecords([record]);
-  normalized.feedback = [
+  normalized.feedback = partialFeedback([
     { timestamp: NOW - 500, traceId: '3'.repeat(32), conversationId: null },
     { timestamp: NOW - 500, traceId: null, conversationId: 'unseen-conversation' },
     { timestamp: NOW + 1, traceId: '1'.repeat(32) },
-  ];
-  const data = composeInsights(normalized, { now: NOW });
+  ]);
+  const data = composeInsights({ ...normalized, pendingRecord: false, missing: false }, { now: NOW });
   assert.equal(data.correlation.linkedChildSpans, 1);
   assert.equal(data.correlation.sessions, 0);
   assert.equal(data.correlation.conversations, 0);
@@ -502,7 +517,7 @@ test('feedback uses an exact trace/span or conversation/session pair within the 
   record.resourceSpans[0].resource = { attributes: [...resource.attributes, attr('session.id', 'example-window')] };
   modelSpan(record).attributes.push(attr('gen_ai.conversation.id', 'example-conversation'));
   const normalized = normalizeRecords([record]);
-  normalized.feedback = [
+  normalized.feedback = partialFeedback([
     { timestamp: NOW - 500, traceId: '1'.repeat(32), spanId: 'b'.repeat(16) },
     { timestamp: NOW - 500, traceId: '1'.repeat(32) },
     { timestamp: NOW - 500, conversationId: 'example-conversation', sessionId: 'example-window' },
@@ -511,8 +526,8 @@ test('feedback uses an exact trace/span or conversation/session pair within the 
     { timestamp: NOW - 500, traceId: '2'.repeat(32), conversationId: 'example-conversation' },
     { timestamp: NOW - 500, conversationId: 'example-conversation', sessionId: 'another-window' },
     { timestamp: NOW - 8 * 86_400_000, conversationId: 'example-conversation' },
-  ];
-  const data = composeInsights(normalized, { now: NOW });
+  ]);
+  const data = composeInsights({ ...normalized, pendingRecord: false, missing: false }, { now: NOW });
   assert.equal(data.correlation.feedbackLogs, 7);
   assert.equal(data.correlation.matchedFeedbackLogs, 4);
 });
@@ -523,7 +538,7 @@ test('demo correlation is fictional and configuration cannot replace its reserve
   assert.ok(demo.correlation.conversations > 0);
   assert.ok(demo.correlation.linkedChildSpans > 0);
   for (const organizationId of ['synthetic-demo', '', '../private', 'private@example.invalid', null, 123, ['local-vscode']]) {
-    await assert.rejects(createApp({ organizationId }), { code: 'invalid-organization' });
+    await assert.rejects(createApp({ organizationId: organizationId as string }), { code: 'invalid-organization' });
   }
 });
 

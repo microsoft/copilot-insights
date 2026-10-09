@@ -1,28 +1,31 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
-import { composeInsights } from '../lib/analytics.mjs';
-import { describeProject, normalizeProject, WindowContextStore } from '../lib/context.mjs';
-import { demoTelemetry } from '../lib/demo.mjs';
-import { normalizeRecords } from '../lib/telemetry.mjs';
-import { createApp } from '../server.mjs';
+import test, { type TestContext } from 'node:test';
+import { composeInsights } from '../lib/analytics.ts';
+import { describeProject, normalizeProject, WindowContextStore } from '../lib/context.ts';
+import { demoTelemetry } from '../lib/demo.ts';
+import type { AppError } from '../lib/errors.ts';
+import { normalizeRecords } from '../lib/telemetry.ts';
+import type { InsightsResponse, ProjectCatalog } from '../lib/types.ts';
+import { createApp } from '../server.ts';
 
 const NOW = Date.UTC(2026, 9, 3, 12);
 const DAY = 86_400_000;
 const projectA = 'example.alpha';
 const projectB = 'example.beta';
 const organizationId = 'test-organization';
-const attribute = (key, value) => ({ key, value: { stringValue: value } });
+const attribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
 
-async function directoryFor(context) {
+async function directoryFor(context: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'insights-project-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
 
-function record(sessionId, index, startedAt, endedAt, conversationId = `conversation-${index}`) {
+function record(sessionId: string, index: number, startedAt: number, endedAt: number, conversationId = `conversation-${index}`) {
   return { resourceSpans: [{ resource: { attributes: [attribute('service.name', 'copilot-chat'), attribute('session.id', sessionId),
     attribute('copilot_insights.organization.id', organizationId), attribute('copilot_insights.project.id', 'CLIENT-MUST-NOT-OVERRIDE')] },
   scopeSpans: [{ scope: { name: 'copilot-chat' }, spans: [{ traceId: index.toString(16).padStart(32, '0'), spanId: index.toString(16).padStart(16, '0'),
@@ -47,11 +50,11 @@ test('concurrent windows and multiple conversations use immutable project bindin
   const store = new WindowContextStore(join(await directoryFor(context), 'windows.json'), () => NOW);
   await store.load();
   await Promise.all([store.register(organizationId, 'window-a', projectA, NOW), store.register(organizationId, 'window-b', projectB, NOW), store.register(organizationId, 'window-none', null, NOW)]);
-  const input = store.attribute(normalizeRecords([
+  const input = store.attribute({ ...normalizeRecords([
     record('window-a', 1, NOW + 10, NOW + 20, 'chat-a1'), record('window-a', 2, NOW + 20, NOW + 30, 'chat-a2'),
     record('window-b', 3, NOW + 10, NOW + 20), record('window-none', 4, NOW + 10, NOW + 20),
     record('unregistered-window', 5, NOW + 10, NOW + 20), record('window-a', 6, NOW - 10, NOW + 10),
-  ], organizationId));
+  ], organizationId), pendingRecord: false, missing: false });
   const reportA = composeInsights(input, { projectKey: describeProject(organizationId, projectA).id, now: NOW + 100 });
   const reportB = composeInsights(input, { projectKey: describeProject(organizationId, projectB).id, now: NOW + 100 });
   assert.equal(reportA.summary.calls, 2);
@@ -129,7 +132,7 @@ test('living windows renew their bindings while windows silent for 32 days are p
     assert.equal((await store.register(organizationId, 'living', projectA, clock)).registeredAt, NOW);
   }
   const stored = JSON.parse(await readFile(path, 'utf8'));
-  assert.deepEqual(stored.windows.map((entry) => [entry.sessionId, entry.renewedAt]), [['living', clock]]);
+  assert.deepEqual(stored.windows.map((entry: { sessionId: string; renewedAt: number }) => [entry.sessionId, entry.renewedAt]), [['living', clock]]);
   assert.equal((await store.register(organizationId, 'closed', projectB, clock)).status, 'active');
 });
 
@@ -137,7 +140,7 @@ test('corrupt, outdated, or unwritable attribution storage fails closed without 
   const directory = await directoryFor(context);
   const path = join(directory, 'windows.json');
   await writeFile(path, 'PRIVATE-CANARY');
-  await assert.rejects(new WindowContextStore(path).load(), (error) => error.code === 'context-storage-unavailable' && !error.message.includes('PRIVATE-CANARY'));
+  await assert.rejects(new WindowContextStore(path).load(), (error: AppError) => error.code === 'context-storage-unavailable' && !error.message.includes('PRIVATE-CANARY'));
   for (const overrides of [{ sessionId: 123 }, { organizationId: 123 }, { project: '../escape' }, { project: undefined }, { renewedAt: undefined }]) {
     await writeFile(path, JSON.stringify({ version: 2, windows: [{ sessionId: 'window-a', organizationId, ownerId: 'local',
       project: projectA, registeredAt: NOW, renewedAt: NOW, closedAt: null, ...overrides }] }));
@@ -152,7 +155,7 @@ test('corrupt, outdated, or unwritable attribution storage fails closed without 
 
 test('demo project totals partition the organization and review fingerprints include the selected filter', () => {
   const input = demoTelemetry(NOW);
-  const reports = ['unattributed', ...input.projects.map((project) => describeProject(input.organizationId, project).id)]
+  const reports = ['unattributed', ...input.projects!.map((project) => describeProject(input.organizationId, project).id)]
     .map((projectKey) => composeInsights(input, { source: 'demo', projectKey, now: NOW }));
   assert.ok(reports.every((report) => report.summary.calls > 0));
   assert.equal(reports.reduce((sum, report) => sum + report.summary.calls, 0), composeInsights(input, { source: 'demo', now: NOW }).summary.calls);
@@ -165,10 +168,10 @@ test('HTTP registration, project filters, and review isolation work without loca
   const telemetryPath = join(directory, 'telemetry.jsonl');
   let now = NOW;
   const server = await createApp({ telemetryPath, reviewPath: join(directory, 'reviews.json'), organizationId, clock: () => now });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const register = (body, headers = {}) => fetch(`${base}/api/context/windows`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ clientTime: now, ...body }) });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const register = (body: object, headers: Record<string, string> = {}) => fetch(`${base}/api/context/windows`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ clientTime: now, ...body }) });
   assert.equal((await register({ sessionId: 'window-a', project: projectA })).status, 200);
   assert.equal((await register({ sessionId: 'window-b', project: projectB })).status, 200);
   for (const body of [{ sessionId: 'window-b', project: projectB, organizationId: 'spoofed' }, { sessionId: 'window-c' }, { sessionId: 'window-c', project: { name: projectA } },
@@ -176,9 +179,9 @@ test('HTTP registration, project filters, and review isolation work without loca
     assert.equal((await register(body)).status, 400, JSON.stringify(body));
   }
   assert.equal((await register({ sessionId: 'window-a', project: null }, { Origin: 'https://foreign.invalid' })).status, 403);
-  await writeFile(telemetryPath, [record('window-a', 1, NOW + 1, NOW + 2), record('window-b', 2, NOW + 1, NOW + 2), record('unregistered', 3, NOW + 1, NOW + 2)].map(JSON.stringify).join('\n') + '\n');
+  await writeFile(telemetryPath, [record('window-a', 1, NOW + 1, NOW + 2), record('window-b', 2, NOW + 1, NOW + 2), record('unregistered', 3, NOW + 1, NOW + 2)].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
   now += 100;
-  const catalog = await (await fetch(`${base}/api/projects?organization=${organizationId}`)).json();
+  const catalog: ProjectCatalog = await (await fetch(`${base}/api/projects?organization=${organizationId}`)).json();
   assert.deepEqual(catalog.projects.map((entry) => entry.name), ['All projects', 'Unattributed', projectA, projectB]);
   const projectKey = describeProject(organizationId, projectA).id;
   const query = `organization=${organizationId}&project=${projectKey}`;
@@ -189,7 +192,7 @@ test('HTTP registration, project filters, and review isolation work without loca
   const reviewHeaders = { 'Content-Type': 'application/json', Origin: base, 'X-Review-Token': report.reviewToken };
   assert.equal((await fetch(`${base}/api/reviews`, { method: 'POST', headers: reviewHeaders, body: JSON.stringify(review) })).status, 200);
   assert.equal((await fetch(`${base}/api/reviews`, { method: 'POST', headers: reviewHeaders, body: JSON.stringify({ ...review, projectKey: 'all' }) })).status, 409);
-  const all = await (await fetch(`${base}/api/insights?organization=${organizationId}`)).json();
+  const all: InsightsResponse = await (await fetch(`${base}/api/insights?organization=${organizationId}`)).json();
   assert.equal(all.summary.calls, 3);
   assert.ok(all.findings.every((finding) => finding.review.status === 'unreviewed'));
   assert.equal((await fetch(`${base}/api/insights?organization=synthetic-demo&project=${projectKey}`)).status, 400);

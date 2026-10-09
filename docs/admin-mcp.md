@@ -43,4 +43,4 @@ There is no reusable privileged MCP session ID. Initialization, discovery, and t
 
 ## Validation
 
-[Security/MCP tests](../apps/insights/tests/security-mcp.test.mjs) use the official MCP client against a real HTTP listener, including initialization, tool discovery, scoped reports, invalid tool arguments, and a role removal between requests. Production-mode tests verify signed RSA JWTs using an isolated test JWKS, not an authentication bypass. These tests **do not prove live Entra consent, sign-in, or tenant role assignment**; use the production acceptance checklist for those gates.
+[Security/MCP tests](../apps/insights/tests/security-mcp.test.ts) use the official MCP client against a real HTTP listener, including initialization, tool discovery, scoped reports, invalid tool arguments, and a role removal between requests. Production-mode tests verify signed RSA JWTs using an isolated test JWKS, not an authentication bypass. These tests **do not prove live Entra consent, sign-in, or tenant role assignment**; use the production acceptance checklist for those gates.

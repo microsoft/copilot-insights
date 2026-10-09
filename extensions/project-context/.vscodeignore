@@ -1,4 +1,6 @@
-tests/**
+src/**
+out/test/**
+tsconfig.json
 .vscode-test/**
 node_modules/**
 package-lock.json

@@ -1,6 +1,9 @@
-const { PROJECT_PATH, projectFromDocument, connectionSettings, publishWindow, identifier } = require('./context.cjs');
+import { PROJECT_PATH, projectFromDocument, connectionSettings, publishWindow, identifier, type Connection, type Fetcher, type Registration } from './context.ts';
 
-async function activateWithApi(vscode, context, fetcher = fetch) {
+type VSCode = typeof import('vscode');
+type ExtensionContext = Pick<import('vscode').ExtensionContext, 'subscriptions'>;
+
+export async function activateWithApi(vscode: VSCode, context: ExtensionContext, fetcher: Fetcher = fetch) {
   const folder = vscode.workspace.workspaceFolders?.[0];
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
   status.name = 'Copilot Insights project';
@@ -9,13 +12,13 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
   status.tooltip = 'No project is assumed. Select the project for this window; all chats in it share that project.';
   status.show();
   context.subscriptions.push(status);
-  let connection;
-  let queue = Promise.resolve();
+  let connection: Connection | undefined;
+  let queue: Promise<unknown> = Promise.resolve();
   let disposed = false;
   let configurationChanged = false;
-  let lastResult;
+  let lastResult: Registration | undefined;
 
-  async function readDocument() {
+  async function readDocument(): Promise<string | undefined> {
     if (!folder) return undefined;
     try {
       const path = vscode.Uri.joinPath(folder.uri, PROJECT_PATH);
@@ -32,7 +35,7 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
       try {
         connection ??= connectionSettings(vscode.workspace.getConfiguration('copilotInsights'));
         const project = projectFromDocument(await readDocument());
-        let token;
+        let token: string | undefined;
         if (connection.authentication === 'entra') {
           const session = await vscode.authentication.getSession('microsoft', connection.scopes,
             interactive ? { createIfNone: true } : { silent: true });
@@ -53,14 +56,14 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
       } catch (error) {
         status.text = '$(warning) Insights: registration needed';
         status.command = 'copilotInsights.publishContext';
-        status.tooltip = `${error.message}\nDo not assume new activity is attributed until registration succeeds.`;
-        if (interactive) void vscode.window.showWarningMessage(error.message);
+        status.tooltip = `${(error as Error).message}\nDo not assume new activity is attributed until registration succeeds.`;
+        if (interactive) void vscode.window.showWarningMessage((error as Error).message);
       }
     });
     return queue;
   }
 
-  function invalidateWindow(reason, interactive = false) {
+  function invalidateWindow(reason: string, interactive = false) {
     configurationChanged = true;
     status.text = `$(debug-restart) Insights: reload for ${reason}`;
     status.command = 'copilotInsights.reloadForProject';
@@ -83,7 +86,7 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
     return queue;
   }
 
-  async function setProject(project) {
+  async function setProject(project: string | null) {
     if (!folder) { void vscode.window.showWarningMessage('Open a folder before selecting a project.'); return; }
     const directory = vscode.Uri.joinPath(folder.uri, '.copilot-insights');
     await vscode.workspace.fs.createDirectory(directory);
@@ -93,12 +96,12 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
     const document = await readDocument();
     const previous = projectFromDocument(document);
     let existing = {};
-    try { const parsed = JSON.parse(document); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed; } catch {}
-    const next = { ...existing, project, updatedAt: new Date().toISOString() };
+    try { const parsed = JSON.parse(document as string); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed; } catch {}
+    const next: Record<string, unknown> = { ...existing, project, updatedAt: new Date().toISOString() };
     if (!project) delete next.project;
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, PROJECT_PATH), new TextEncoder().encode(`${JSON.stringify(next, null, 2)}\n`));
     await register(true);
-    let choice;
+    let choice: string | undefined;
     if (lastResult?.status === 'reload-required') {
       choice = await vscode.window.showWarningMessage('The project changed. Reload this window before continuing Copilot work.', 'Reload window');
     } else if (!previous && project && lastResult?.status === 'active') {
@@ -138,5 +141,4 @@ async function activateWithApi(vscode, context, fetcher = fetch) {
   return { register, setProject, readProject: async () => projectFromDocument(await readDocument()) };
 }
 
-async function activate(context) { return activateWithApi(require('vscode'), context); }
-module.exports = { activate, activateWithApi };
+export async function activate(context: ExtensionContext) { return activateWithApi(require('vscode'), context); }

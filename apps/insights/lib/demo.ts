@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
-import { normalizeRecords } from './telemetry.mjs';
-import { describeProject } from './context.mjs';
+import { normalizeRecords } from './telemetry.ts';
+import { describeProject } from './context.ts';
+import type { TelemetryInput } from './types.ts';
 
 const DAY = 86_400_000;
-const hash = (text, length) => createHash('sha256').update(text).digest('hex').slice(0, length);
-const textAttribute = (key, value) => ({ key, value: { stringValue: value } });
-const countAttribute = (key, value) => ({ key, value: { intValue: String(value) } });
+const hash = (text: string, length: number) => createHash('sha256').update(text).digest('hex').slice(0, length);
+const textAttribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
+const countAttribute = (key: string, value: number) => ({ key, value: { intValue: String(value) } });
 
-export function demoTelemetry(now = Date.now()) {
+export function demoTelemetry(now = Date.now()): TelemetryInput {
   const today = Math.floor(now / DAY) * DAY;
-  const spans = [];
+  const spans: object[] = [];
   const models = ['example-balanced', 'example-fast', 'example-reasoning'];
   const tools = ['readFile', 'searchFiles', 'runTests', 'editFile'];
   for (let dayOffset = 29; dayOffset >= 0; dayOffset--) {
@@ -23,7 +24,7 @@ export function demoTelemetry(now = Date.now()) {
       const timestamp = date + 8 * 3_600_000 + callIndex * 900_000;
       const duration = modelIndex === 2 && callIndex % 4 === 0 ? 12_400 : 520 + modelIndex * 900 + callIndex * 71;
       const isError = (callIndex + dayOffset) % 11 === 0;
-      const makeSpan = (operation, suffix, elapsed, attributes, status = 1) => ({
+      const makeSpan = (operation: string, suffix: string, elapsed: number, attributes: object[], status = 1) => ({
         traceId,
         spanId: suffix === 'agent' ? agentId : hash(`${suffix}-${seed}`, 16),
         ...(suffix === 'agent' ? {} : { parentSpanId: agentId }),

@@ -30,13 +30,7 @@ jobs:
           docker run --rm --network none \
             --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" \
             copilot-insights-review:local node --test
-          docker compose -f deploy/local/compose.yaml exec -T insights node --check public/app.js
-
-      - name: Test the project companion with an isolated VS Code API
-        run: |
-          docker run --rm --network none \
-            --mount "type=bind,source=$PWD/extensions/project-context,target=/extension,readonly" \
-            --workdir /extension copilot-insights-review:local npm test
+          docker compose -f deploy/local/compose.yaml exec -T insights node --check dist/web/app.js
 
       - name: Verify collector-to-analytics delivery
         run: |
@@ -83,6 +77,28 @@ jobs:
       - name: Stop the local quick start
         if: always()
         run: docker compose -f deploy/local/compose.yaml down
+
+  typescript:
+    name: TypeScript checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+
+      - name: Type-check the portal, its browser code, and tests
+        working-directory: apps/insights
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+
+      - name: Test the project companion with an isolated VS Code API
+        working-directory: extensions/project-context
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
 
   template:
     name: Azure template

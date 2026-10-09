@@ -1,29 +1,44 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeInsights } from './lib/analytics.mjs';
-import { authConfigFromEnvironment, createAuthorization } from './lib/auth.mjs';
-import { projectCatalog, WindowContextStore } from './lib/context.mjs';
-import { demoTelemetry } from './lib/demo.mjs';
-import { AppError } from './lib/errors.mjs';
-import { logAnalyticsSource } from './lib/loganalytics.mjs';
-import { handleMcp } from './lib/mcp.mjs';
-import { REVIEW_STATUSES, ReviewStore } from './lib/reviews.mjs';
-import { readTelemetry } from './lib/telemetry.mjs';
+import type { JWTVerifyGetKey } from 'jose';
+import { composeInsights } from './lib/analytics.ts';
+import { authConfigFromEnvironment, createAuthorization, type AuthConfig, type Permission } from './lib/auth.ts';
+import { projectCatalog, WindowContextStore } from './lib/context.ts';
+import { demoTelemetry } from './lib/demo.ts';
+import { AppError } from './lib/errors.ts';
+import { logAnalyticsSource } from './lib/loganalytics.ts';
+import { handleMcp, type McpServices } from './lib/mcp.ts';
+import { REVIEW_STATUSES, ReviewStore } from './lib/reviews.ts';
+import { readTelemetry } from './lib/telemetry.ts';
+import type { Finding, Organization, Review, Snapshot, TelemetryInput } from './lib/types.ts';
+
+interface AppOptions {
+  telemetryPath?: string;
+  reviewPath?: string;
+  contextPath?: string;
+  organizationId?: string;
+  organizationName?: string;
+  clock?: () => number;
+  authConfig?: AuthConfig;
+  keyResolver?: JWTVerifyGetKey;
+  readCollected?: (organizationId: string) => Promise<TelemetryInput>;
+}
 
 const publicRoot = new URL('./public/', import.meta.url);
+const scriptRoot = new URL('./dist/web/', import.meta.url);
 const defaultTelemetry = fileURLToPath(new URL('../../deploy/local/.data/vscode-telemetry.jsonl', import.meta.url));
 const defaultReviews = fileURLToPath(new URL('../../deploy/local/.data/reviews.json', import.meta.url));
-const staticFiles = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/auth.js', ['auth.js', 'text/javascript; charset=utf-8']],
-  ['/auth/redirect.html', ['auth-redirect.html', 'text/html; charset=utf-8']],
-  ['/auth-redirect.js', ['auth-redirect.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
-  ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
+const staticFiles = new Map<string, [URL, string]>([
+  ['/', [new URL('index.html', publicRoot), 'text/html; charset=utf-8']],
+  ['/app.js', [new URL('app.js', scriptRoot), 'text/javascript; charset=utf-8']],
+  ['/auth.js', [new URL('auth.js', scriptRoot), 'text/javascript; charset=utf-8']],
+  ['/auth/redirect.html', [new URL('auth-redirect.html', publicRoot), 'text/html; charset=utf-8']],
+  ['/auth-redirect.js', [new URL('auth-redirect.js', scriptRoot), 'text/javascript; charset=utf-8']],
+  ['/styles.css', [new URL('styles.css', publicRoot), 'text/css; charset=utf-8']],
+  ['/favicon.svg', [new URL('favicon.svg', publicRoot), 'image/svg+xml']],
 ]);
 const securityHeaders = {
   'Cache-Control': 'no-store',
@@ -36,12 +51,12 @@ const securityHeaders = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
-function send(response, status, data, type = 'application/json; charset=utf-8') {
+function send(response: ServerResponse, status: number, data: unknown, type = 'application/json; charset=utf-8') {
   response.writeHead(status, { 'Content-Type': type });
-  response.end(type.startsWith('application/json') ? JSON.stringify(data) : data);
+  response.end(type.startsWith('application/json') ? JSON.stringify(data) : data as Buffer);
 }
 
-function validateScope(organizations, organizationId, source, days) {
+function validateScope(organizations: Organization[], organizationId: string | undefined, source: string | undefined, days: number): Organization {
   const organization = organizationId !== undefined
     ? organizations.find((entry) => entry.id === organizationId)
     : source !== undefined ? organizations.find((entry) => entry.source === source) : organizations[0];
@@ -51,7 +66,7 @@ function validateScope(organizations, organizationId, source, days) {
   return organization;
 }
 
-async function readBody(request, limit = 4096) {
+async function readBody(request: IncomingMessage, limit = 4096) {
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     request.resume();
     throw new AppError('invalid-content-type', 'Requests must use JSON.', 415);
@@ -60,7 +75,7 @@ async function readBody(request, limit = 4096) {
     request.resume();
     throw new AppError('body-too-large', 'The request is too large.', 413);
   }
-  const chunks = [];
+  const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
@@ -74,7 +89,7 @@ async function readBody(request, limit = 4096) {
   catch { throw new AppError('invalid-json', 'The request is not valid JSON.', 400); }
 }
 
-function validateQuery(url, keys) {
+function validateQuery(url: URL, keys: string[]) {
   if ([...url.searchParams.keys()].some((key) => !keys.includes(key)) || keys.some((key) => url.searchParams.getAll(key).length > 1)) {
     throw new AppError('invalid-query', 'Only documented filters are accepted, without duplicates.', 400);
   }
@@ -82,14 +97,14 @@ function validateQuery(url, keys) {
 
 export async function createApp({ telemetryPath = defaultTelemetry, reviewPath = defaultReviews, contextPath = join(dirname(reviewPath), 'windows.json'),
   organizationId = 'local-vscode', organizationName = 'My VS Code organization', clock = Date.now,
-  authConfig = { mode: 'local' }, keyResolver, readCollected = (id) => readTelemetry(telemetryPath, id) } = {}) {
+  authConfig = { mode: 'local' }, keyResolver, readCollected = (id) => readTelemetry(telemetryPath, id) }: AppOptions = {}): Promise<Server> {
   if (typeof organizationId !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(organizationId) || organizationId === 'synthetic-demo'
     || typeof organizationName !== 'string' || !organizationName.trim() || organizationName.length > 64) {
     throw new AppError('invalid-organization', 'Configure a non-demo organization ID and a display name of at most 64 characters.');
   }
   const authorization = createAuthorization(authConfig, { keyResolver, clock });
-  const organizations = [
-    ...(authorization.mode === 'production' ? [] : [{ id: 'synthetic-demo', name: 'Demo organization', source: 'demo' }]),
+  const organizations: Organization[] = [
+    ...(authorization.mode === 'production' ? [] : [{ id: 'synthetic-demo', name: 'Demo organization', source: 'demo' } satisfies Organization]),
     { id: organizationId, name: organizationName, source: 'local' },
   ];
   const store = new ReviewStore(reviewPath);
@@ -97,18 +112,18 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
   const contexts = new WindowContextStore(contextPath, clock);
   await contexts.load();
   const reviewToken = randomBytes(32).toString('hex');
-  const readInput = async (organization, now) => organization.source === 'demo' ? demoTelemetry(now)
+  const readInput = async (organization: Organization, now: number) => organization.source === 'demo' ? demoTelemetry(now)
     : contexts.attribute(await readCollected(organization.id));
-  const catalog = (organization, input) => projectCatalog(input, organization.source === 'demo' ? [] : contexts.projects(organization.id));
-  const projects = async (id) => {
+  const catalog = (organization: Organization, input: TelemetryInput) => projectCatalog(input, organization.source === 'demo' ? [] : contexts.projects(organization.id));
+  const projects = async (id: string | undefined) => {
     const organization = validateScope(organizations, id, undefined, 7);
     return { organizationId: organization.id, projects: catalog(organization, await readInput(organization, clock())) };
   };
-  const reviewOf = (finding, organization, projectKey) => {
+  const reviewOf = (finding: Finding, organization: Organization, projectKey: string): Review => {
     const { evidence, ...review } = store.get(finding.id, organization.id, projectKey);
-    return { ...review, newEvidence: evidence !== null && (finding.evidenceCount > evidence.count || finding.latestEvidenceAt > evidence.latestAt) };
+    return { ...review, newEvidence: evidence !== null && (finding.evidenceCount > evidence.count || (finding.latestEvidenceAt ?? 0) > (evidence.latestAt ?? 0)) };
   };
-  const snapshot = async (organization, days, projectKey = 'all') => {
+  const snapshot = async (organization: Organization, days: number, projectKey = 'all'): Promise<Snapshot> => {
     const now = clock();
     const input = await readInput(organization, now);
     const project = catalog(organization, input).find((entry) => entry.id === projectKey);
@@ -117,7 +132,7 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
     for (const finding of data.findings) finding.review = reviewOf(finding, organization, projectKey);
     return data;
   };
-  const mcpServices = { organizations, projects, snapshot: (id, days, projectKey) => snapshot(validateScope(organizations, id, undefined, days), days, projectKey) };
+  const mcpServices: McpServices = { organizations, projects, snapshot: (id, days, projectKey) => snapshot(validateScope(organizations, id, undefined, days), days, projectKey) };
   const server = createServer({ maxHeaderSize: 8192, requestTimeout: 10_000, headersTimeout: 10_000 }, async (request, response) => {
     for (const [name, value] of Object.entries(securityHeaders)) response.setHeader(name, value);
     if (authorization.mode === 'production') {
@@ -127,9 +142,9 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
     if (request.url?.split('?')[0] === '/auth/redirect.html') {
       response.removeHeader('Cross-Origin-Opener-Policy');
       response.setHeader('X-Frame-Options', 'SAMEORIGIN');
-      response.setHeader('Content-Security-Policy', response.getHeader('Content-Security-Policy').replace("frame-ancestors 'none'", "frame-ancestors 'self'"));
+      response.setHeader('Content-Security-Policy', (response.getHeader('Content-Security-Policy') as string).replace("frame-ancestors 'none'", "frame-ancestors 'self'"));
     }
-    let permission = 'admin';
+    let permission: Permission = 'admin';
     try {
       const host = request.headers.host ?? '';
       const loopback = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/.test(host);
@@ -138,7 +153,7 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
         throw new AppError('host-required', 'This listener does not accept the requested host.', 403);
       }
       const origin = authorization.publicOrigin ?? `http://${host}`;
-      const url = new URL(request.url, origin);
+      const url = new URL(request.url!, origin);
       if (url.origin !== origin || (request.headers['sec-fetch-site'] === 'cross-site' && (url.pathname.startsWith('/api/') || url.pathname === '/mcp' || request.method !== 'GET'))
         || (request.headers.origin && request.headers.origin !== origin)) {
         throw new AppError('same-origin-required', 'Cross-origin access is not permitted.', 403);
@@ -216,8 +231,8 @@ export async function createApp({ telemetryPath = defaultTelemetry, reviewPath =
       } else if (request.method === 'GET' && url.pathname === '/vendor/msal-redirect-bridge.min.js') {
         send(response, 200, await readFile(new URL('./node_modules/@azure/msal-browser/lib/redirect-bridge/msal-redirect-bridge.min.js', import.meta.url)), 'text/javascript; charset=utf-8');
       } else if (request.method === 'GET' && staticFiles.has(url.pathname)) {
-        const [name, type] = staticFiles.get(url.pathname);
-        send(response, 200, await readFile(new URL(name, publicRoot)), type);
+        const [file, type] = staticFiles.get(url.pathname)!;
+        send(response, 200, await readFile(file), type);
       } else {
         send(response, 404, { error: { code: 'not-found', message: 'This route is not available.' } });
       }

@@ -1,17 +1,26 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { PROJECT_KEY_PATTERN } from './context.mjs';
-import { AppError } from './errors.mjs';
+import { PROJECT_KEY_PATTERN } from './context.ts';
+import { AppError } from './errors.ts';
+import type { Organization, ProjectCatalog, Snapshot } from './types.ts';
+
+export interface McpServices {
+  organizations: Organization[];
+  projects: (organizationId: string | undefined) => Promise<ProjectCatalog>;
+  snapshot: (organizationId: string | undefined, days: number, projectKey: string) => Promise<Snapshot>;
+}
 
 const organization = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional();
 const project = z.string().regex(PROJECT_KEY_PATTERN).default('all');
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
-export function createInsightsMcp({ organizations, projects, snapshot }) {
+export function createInsightsMcp({ organizations, projects, snapshot }: McpServices): McpServer {
   const server = new McpServer({ name: 'copilot-insights-admin', version: '0.1.0' });
-  const result = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value });
-  const guarded = (callback) => async (input) => {
+  const result = (value: object): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value as Record<string, unknown> });
+  const guarded = <Input>(callback: (input: Input) => Promise<object>) => async (input: Input): Promise<CallToolResult> => {
     try { return result(await callback(input)); }
     catch (error) {
       return { isError: true, content: [{ type: 'text', text: error instanceof AppError ? error.message : 'The report is unavailable. No substitute data is returned.' }] };
@@ -35,7 +44,7 @@ export function createInsightsMcp({ organizations, projects, snapshot }) {
   return server;
 }
 
-export async function handleMcp(request, response, body, services) {
+export async function handleMcp(request: IncomingMessage, response: ServerResponse, body: unknown, services: McpServices): Promise<void> {
   const server = createInsightsMcp(services);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   response.once('close', () => { void server.close().catch(() => {}); });

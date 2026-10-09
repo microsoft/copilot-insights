@@ -1,11 +1,20 @@
-let config;
-let client;
+import type * as Msal from '@azure/msal-browser';
+import type { PublicAuthConfig } from '../lib/types.ts';
 
-function requireSignIn(message) {
-  document.getElementById('main').hidden = true;
-  document.getElementById('auth-panel').hidden = false;
-  document.getElementById('auth-message').textContent = message;
-  document.getElementById('review-dialog').close();
+declare global {
+  var msal: typeof Msal;
+}
+
+type ProductionConfig = Extract<PublicAuthConfig, { mode: 'production' }>;
+
+let config: PublicAuthConfig | undefined;
+let client: Msal.PublicClientApplication | undefined;
+
+function requireSignIn(message: string) {
+  document.getElementById('main')!.hidden = true;
+  document.getElementById('auth-panel')!.hidden = false;
+  document.getElementById('auth-message')!.textContent = message;
+  (document.getElementById('review-dialog') as HTMLDialogElement).close();
 }
 
 async function token() {
@@ -13,14 +22,14 @@ async function token() {
   const account = client?.getActiveAccount();
   if (!account) throw new Error('Sign in with an assigned Insights admin account.');
   try {
-    return (await client.acquireTokenSilent({ account, scopes: [config.scope] })).accessToken;
+    return (await client!.acquireTokenSilent({ account, scopes: [(config as ProductionConfig).scope] })).accessToken;
   } catch {
     requireSignIn('Your sign-in needs attention. Sign in again; no cached reports are displayed.');
     throw new Error('Sign in again to read reports.');
   }
 }
 
-export async function apiFetch(path, options = {}) {
+export async function apiFetch(path: string, options: RequestInit = {}) {
   const accessToken = await token();
   const headers = new Headers(options.headers);
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
@@ -35,17 +44,17 @@ export async function apiFetch(path, options = {}) {
   return response;
 }
 
-export async function initializeAuth() {
+export async function initializeAuth(): Promise<{ mode: PublicAuthConfig['mode']; ready: boolean }> {
   const response = await fetch('/api/auth-config', { redirect: 'error' });
   if (!response.ok) throw new Error('The authentication configuration is unavailable.');
-  config = await response.json();
+  config = await response.json() as PublicAuthConfig;
   if (config.mode === 'local') {
-    document.getElementById('main').hidden = false;
-    document.getElementById('auth-panel').hidden = true;
+    document.getElementById('main')!.hidden = false;
+    document.getElementById('auth-panel')!.hidden = true;
     return { mode: 'local', ready: true };
   }
   if (config.mode !== 'production') throw new Error('Unsupported authentication mode.');
-  document.getElementById('environment-label').textContent = 'Entra-protected';
+  document.getElementById('environment-label')!.textContent = 'Entra-protected';
   await new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = '/vendor/msal-browser.min.js';
@@ -61,13 +70,13 @@ export async function initializeAuth() {
   await client.initialize();
   const redirect = await client.handleRedirectPromise();
   if (redirect?.account) client.setActiveAccount(redirect.account);
-  document.getElementById('sign-in-button').hidden = false;
-  document.getElementById('sign-in-button').addEventListener('click', () => {
-    void client.loginRedirect({ scopes: [config.scope], prompt: 'select_account', redirectStartPage: location.href }).catch(() => requireSignIn('Sign-in could not start. Check the registered redirect URI and tenant configuration.'));
+  document.getElementById('sign-in-button')!.hidden = false;
+  document.getElementById('sign-in-button')!.addEventListener('click', () => {
+    void client!.loginRedirect({ scopes: [(config as ProductionConfig).scope], prompt: 'select_account', redirectStartPage: location.href }).catch(() => requireSignIn('Sign-in could not start. Check the registered redirect URI and tenant configuration.'));
   });
-  document.getElementById('sign-out-button').addEventListener('click', () => {
+  document.getElementById('sign-out-button')!.addEventListener('click', () => {
     requireSignIn('Signing out…');
-    void client.logoutRedirect().catch(() => requireSignIn('Sign-out could not finish. Close this browser tab.'));
+    void client!.logoutRedirect().catch(() => requireSignIn('Sign-out could not finish. Close this browser tab.'));
   });
   if (!client.getActiveAccount()) {
     requireSignIn('Sign in with an assigned Insights admin account to view reports and review evidence.');
@@ -75,8 +84,8 @@ export async function initializeAuth() {
   }
   const check = await apiFetch('/api/organizations');
   if (!check.ok) return { mode: 'production', ready: false };
-  document.getElementById('sign-out-button').hidden = false;
-  document.getElementById('main').hidden = false;
-  document.getElementById('auth-panel').hidden = true;
+  document.getElementById('sign-out-button')!.hidden = false;
+  document.getElementById('main')!.hidden = false;
+  document.getElementById('auth-panel')!.hidden = true;
   return { mode: 'production', ready: true };
 }

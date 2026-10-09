@@ -1,9 +1,15 @@
-const assert = require('node:assert/strict');
-const { readFile, writeFile } = require('node:fs/promises');
-const { basename, join } = require('node:path');
-const vscode = require('vscode');
+import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import * as vscode from 'vscode';
 
-async function run() {
+interface Report {
+  summary: { calls: number; toolCalls: number };
+  correlation: { conversations: number; sessions: number };
+  quality: { attributedSpans: number; fixtureTaggedSpans: number };
+}
+
+export async function run() {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder || !basename(folder).startsWith('copilot-insights-native-')) throw new Error('Native tests require a dedicated disposable sample workspace.');
   const output = join(folder, 'native-result.json');
@@ -17,7 +23,7 @@ async function run() {
     const api = await extension.activate();
     await api.register();
     const selected = await api.readProject();
-    const catalog = await (await fetch('http://127.0.0.1:3000/api/projects?organization=local-vscode')).json();
+    const catalog: { projects: { id: string; project: string | null }[] } = await (await fetch('http://127.0.0.1:3000/api/projects?organization=local-vscode')).json();
     const project = catalog.projects.find((entry) => entry.project === selected);
     assert.ok(project, 'Window registration was not persisted.');
     const copilot = vscode.extensions.getExtension('GitHub.copilot-chat');
@@ -27,14 +33,14 @@ async function run() {
     assert.ok(readTools.length, 'No native file-reading tool is available.');
     for (let index = 0; index < options.chats; index++) {
       await vscode.commands.executeCommand('workbench.action.chat.newChat');
-      const result = await vscode.commands.executeCommand('workbench.action.chat.open', {
+      const result = await vscode.commands.executeCommand<{ errorDetails?: unknown; type?: string } | undefined>('workbench.action.chat.open', {
         query: 'Use the file-reading tool to read hello.txt in this disposable workspace, then report its one line. Do not run terminal commands, edit files, use network tools, or read any other file.',
         mode: 'agent', blockOnResponse: true, toolsInclude: readTools,
       });
       if (result?.errorDetails || result?.type === 'confirmation') throw new Error('Native Copilot needs sign-in, model access, or user confirmation.');
     }
     const deadline = Date.now() + 90_000;
-    let report;
+    let report!: Report;
     while (Date.now() < deadline) {
       const response = await fetch(`http://127.0.0.1:3000/api/insights?organization=local-vscode&project=${project.id}&days=7`);
       assert.ok(response.ok, 'Insights API is unavailable.');
@@ -51,9 +57,7 @@ async function run() {
       chats: options.chats, modelCalls: report.summary.calls, toolCalls: report.summary.toolCalls, conversations: report.correlation.conversations,
       windows: report.correlation.sessions, attributedSpans: report.quality.attributedSpans, fixtureTaggedSpans: report.quality.fixtureTaggedSpans }, null, 2));
   } catch (error) {
-    await writeFile(output, JSON.stringify({ status: 'failed', message: error.message }, null, 2));
+    await writeFile(output, JSON.stringify({ status: 'failed', message: (error as Error).message }, null, 2));
     throw error;
   }
 }
-
-module.exports = { run };

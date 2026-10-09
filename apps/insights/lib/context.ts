@@ -1,7 +1,26 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { AppError } from './errors.mjs';
-import { fingerprint } from './telemetry.mjs';
+import { AppError } from './errors.ts';
+import { fingerprint } from './telemetry.ts';
+import type { Feedback, NormalizedTelemetry, ProjectEntry, Span } from './types.ts';
+
+interface WindowBinding {
+  sessionId: string;
+  organizationId: string;
+  ownerId: string;
+  project: string | null;
+  registeredAt: number;
+  renewedAt: number;
+  closedAt: number | null;
+}
+
+export interface Registration {
+  sessionId: string;
+  registeredAt: number | null;
+  closedAt: number | null;
+  project: ProjectEntry;
+  status: 'active' | 'unattributed' | 'reload-required';
+}
 
 export const ALL_PROJECTS = 'all';
 export const UNATTRIBUTED = 'unattributed';
@@ -15,7 +34,7 @@ const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 const RETENTION_MS = 32 * DAY;
 const RENEWAL_MS = DAY;
 
-export function normalizeProject(value) {
+export function normalizeProject(value: unknown): string | null {
   if (value === null) return null;
   if (typeof value !== 'string' || !identifierPattern.test(value)) {
     throw new AppError('invalid-project', 'Supply a project ID of 1-128 letters, digits, dots, underscores, or hyphens, or null for unattributed activity.', 400);
@@ -23,13 +42,13 @@ export function normalizeProject(value) {
   return value;
 }
 
-export function describeProject(organizationId, project) {
+export function describeProject(organizationId: string, project: string | null | undefined): ProjectEntry {
   if (!project) return { id: UNATTRIBUTED, name: 'Unattributed', project: null };
   return { id: `prj-${fingerprint([organizationId, project])}`, name: project, project };
 }
 
-export function projectCatalog(input, projects = []) {
-  const entries = new Map();
+export function projectCatalog(input: { organizationId: string; projects?: string[] }, projects: string[] = []): ProjectEntry[] {
+  const entries = new Map<string, ProjectEntry>();
   for (const project of [...projects, ...(input.projects ?? [])]) {
     const entry = describeProject(input.organizationId, project);
     if (entry.id !== UNATTRIBUTED) entries.set(entry.id, entry);
@@ -42,7 +61,12 @@ export function projectCatalog(input, projects = []) {
 }
 
 export class WindowContextStore {
-  constructor(path, clock = Date.now) {
+  path: string;
+  clock: () => number;
+  windows: Map<string, WindowBinding>;
+  queue: Promise<unknown>;
+
+  constructor(path: string, clock = Date.now) {
     this.path = path;
     this.clock = clock;
     this.windows = new Map();
@@ -68,11 +92,11 @@ export class WindowContextStore {
           project, registeredAt: entry.registeredAt, renewedAt: entry.renewedAt, closedAt: entry.closedAt });
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') throw new AppError('context-storage-unavailable', 'Window attribution state cannot be read. Restore the context volume before collecting attributed activity.');
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AppError('context-storage-unavailable', 'Window attribution state cannot be read. Restore the context volume before collecting attributed activity.');
     }
   }
 
-  async save(next) {
+  async save(next: Map<string, WindowBinding>) {
     try {
       await mkdir(dirname(this.path), { recursive: true });
       await writeFile(`${this.path}.tmp`, JSON.stringify({ version: 2, windows: [...next.values()] }), { mode: 0o600 });
@@ -83,19 +107,19 @@ export class WindowContextStore {
     this.windows = next;
   }
 
-  register(organizationId, sessionId, value, clientTime, ownerId = 'local') {
+  register(organizationId: string, sessionId: unknown, value: unknown, clientTime: unknown, ownerId = 'local'): Promise<Registration> {
     if (typeof sessionId !== 'string' || !identifierPattern.test(sessionId)) {
       return Promise.reject(new AppError('invalid-session', 'Supply the native VS Code window session ID.', 400));
     }
-    if (!Number.isSafeInteger(clientTime)) return Promise.reject(new AppError('invalid-client-time', 'Supply the device time in epoch milliseconds.', 400));
+    if (typeof clientTime !== 'number' || !Number.isSafeInteger(clientTime)) return Promise.reject(new AppError('invalid-client-time', 'Supply the device time in epoch milliseconds.', 400));
     const project = normalizeProject(value);
-    const operation = this.queue.catch(() => {}).then(async () => {
+    const operation = this.queue.catch(() => {}).then(async (): Promise<Registration> => {
       const now = this.clock();
       if (Math.abs(clientTime - now) > MAX_CLOCK_SKEW_MS) {
         throw new AppError('clock-skew', 'The device clock differs from the Insights service by more than 5 minutes. Synchronize it, then register again.', 400);
       }
       const key = JSON.stringify([organizationId, sessionId]);
-      const expired = (entry) => entry.renewedAt < now - RETENTION_MS;
+      const expired = (entry: WindowBinding) => entry.renewedAt < now - RETENTION_MS;
       const live = () => new Map([...this.windows].filter(([, entry]) => !expired(entry)));
       let binding = this.windows.get(key);
       if (binding && expired(binding)) binding = undefined;
@@ -125,12 +149,12 @@ export class WindowContextStore {
     return operation;
   }
 
-  projects(organizationId) {
-    return [...this.windows.values()].filter((binding) => binding.organizationId === organizationId && binding.project).map((binding) => binding.project);
+  projects(organizationId: string): string[] {
+    return [...this.windows.values()].filter((binding) => binding.organizationId === organizationId && binding.project).map((binding) => binding.project!);
   }
 
-  attribute(input) {
-    const resolve = (item, startedAt) => {
+  attribute<T extends NormalizedTelemetry>(input: T): T {
+    const resolve = <Item extends Span | Feedback>(item: Item, startedAt: number | null): Item => {
       const binding = this.windows.get(JSON.stringify([input.organizationId, item.sessionId]));
       const selected = binding?.project && startedAt !== null && startedAt >= binding.registeredAt
         && item.timestamp >= startedAt && (binding.closedAt === null || item.timestamp < binding.closedAt);

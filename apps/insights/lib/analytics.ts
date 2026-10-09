@@ -1,9 +1,12 @@
-import { fingerprint } from './telemetry.mjs';
-import { AppError } from './errors.mjs';
+import { fingerprint } from './telemetry.ts';
+import { AppError } from './errors.ts';
+import type { Breakdown, Feedback, Finding, FindingKind, InsightsReport, ModelStats, Source, Span, TelemetryInput, TraceGroup } from './types.ts';
+
+type FindingDetails = Pick<Finding, 'category' | 'priority' | 'title' | 'description' | 'observed' | 'rule' | 'guidance'>;
 
 const DAY = 86_400_000;
-const ratio = (part, total) => total ? part / total : null;
-const sumKnown = (values) => {
+const ratio = (part: number, total: number) => total ? part / total : null;
+const sumKnown = (values: (number | null)[]) => {
   const known = values.filter((value) => value !== null);
   if (!known.length) return null;
   const total = known.reduce((sum, value) => sum + value, 0);
@@ -11,12 +14,12 @@ const sumKnown = (values) => {
   return total;
 };
 
-export function percentile(values, fraction = 0.95) {
+export function percentile(values: (number | null)[], fraction = 0.95): number | null {
   const known = values.filter((value) => value !== null).sort((left, right) => left - right);
   return known.length ? known[Math.max(0, Math.ceil(known.length * fraction) - 1)] : null;
 }
 
-function modelStats(calls) {
+function modelStats(calls: Span[]): ModelStats {
   const complete = calls.filter((span) => span.inputTokens !== null && span.outputTokens !== null).length;
   return {
     calls: calls.length,
@@ -32,27 +35,29 @@ function modelStats(calls) {
   };
 }
 
-function breakdown(spans, field) {
-  const groups = new Map();
+function breakdown(spans: Span[], field: 'model' | 'tool'): Breakdown[] {
+  const groups = new Map<string, Span[]>();
   for (const span of spans) {
-    if (!groups.has(span[field])) groups.set(span[field], []);
-    groups.get(span[field]).push(span);
+    const name = span[field]!;
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name)!.push(span);
   }
   return [...groups.entries()].map(([name, calls]) => ({ name, ...modelStats(calls) }))
     .sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
 }
 
-export function composeInsights(input, { source = 'local', days = 7, now = Date.now(), projectKey = 'all' } = {}) {
+export function composeInsights(input: TelemetryInput, { source = 'local', days = 7, now = Date.now(), projectKey = 'all' }:
+  { source?: Source; days?: number; now?: number; projectKey?: string } = {}): InsightsReport {
   const organizationId = input.organizationId ?? 'local-dev';
   const today = Math.floor(now / DAY) * DAY;
   const from = today - (days - 1) * DAY;
-  const inScope = (item) => projectKey === 'all' || (item.projectKey ?? 'unattributed') === projectKey;
+  const inScope = (item: Span | Feedback) => projectKey === 'all' || (item.projectKey ?? 'unattributed') === projectKey;
   const scopedSpans = input.spans.filter(inScope);
   const eligible = scopedSpans.filter((span) => span.timestamp <= now);
   const spans = eligible.filter((span) => span.timestamp >= from).sort((left, right) => left.id.localeCompare(right.id));
   const calls = spans.filter((span) => span.operation === 'chat');
   const tools = spans.filter((span) => span.operation === 'execute_tool');
-  const latestTimestamp = eligible.reduce((latest, span) => Math.max(latest ?? 0, span.timestamp), null);
+  const latestTimestamp = eligible.reduce<number | null>((latest, span) => Math.max(latest ?? 0, span.timestamp), null);
   const stats = modelStats(calls);
   const errors = calls.filter((span) => span.outcome === 'error');
   const unknown = calls.filter((span) => span.outcome === 'unknown');
@@ -70,7 +75,7 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     : item.conversationId && (item.sessionId
       ? sessionConversations.has(JSON.stringify([item.sessionId, item.conversationId]))
       : conversationIds.has(item.conversationId)));
-  const traceGroups = new Map();
+  const traceGroups = new Map<string, TraceGroup>();
   for (const span of spans) {
     const group = traceGroups.get(span.traceId) ?? { traceId: span.traceId, spans: 0, linkedChildren: 0, latestTimestamp: span.timestamp };
     group.spans++;
@@ -78,8 +83,8 @@ export function composeInsights(input, { source = 'local', days = 7, now = Date.
     group.latestTimestamp = Math.max(group.latestTimestamp, span.timestamp);
     traceGroups.set(span.traceId, group);
   }
-  const findings = [];
-  const addFinding = (kind, details, evidence, evidenceCount = evidence.length) => {
+  const findings: Finding[] = [];
+  const addFinding = (kind: FindingKind, details: FindingDetails, evidence: Span[], evidenceCount = evidence.length) => {
     findings.push({
       id: fingerprint([organizationId, projectKey, source, days, kind]),
       kind,

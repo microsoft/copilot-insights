@@ -1,14 +1,22 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { authConfigFromEnvironment, createAuthorization } from '../lib/auth.mjs';
-import { createApp } from '../server.mjs';
+import { authConfigFromEnvironment, createAuthorization } from '../lib/auth.ts';
+import type { OrganizationCatalog, ProjectCatalog, Snapshot } from '../lib/types.ts';
+import { createApp } from '../server.ts';
+
+interface RequestOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
 
 const NOW = Date.UTC(2026, 9, 3, 12);
 const config = {
@@ -22,16 +30,17 @@ const keys = await generateKeyPair('RS256', { extractable: true });
 const publicKey = { ...await exportJWK(keys.publicKey), kid: 'test-key', alg: 'RS256', use: 'sig' };
 const keyResolver = createLocalJWKSet({ keys: [publicKey] });
 
-function proxyFetch(url, options = {}) {
+function proxyFetch(url: string | URL, options: RequestInit = {}): Promise<Response> {
   return new Promise((resolve, reject) => {
-    const request = httpRequest(url, { method: options.method ?? 'GET', headers: Object.fromEntries(new Headers(options.headers)), signal: options.signal }, (response) => {
-      const chunks = [];
+    const request = httpRequest(url, { method: options.method ?? 'GET', headers: Object.fromEntries(new Headers(options.headers)), signal: options.signal ?? undefined }, (response) => {
+      const chunks: Buffer[] = [];
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('error', reject);
-      response.on('end', () => resolve(new Response([204, 205, 304].includes(response.statusCode) ? null : Buffer.concat(chunks), { status: response.statusCode, headers: response.headers })));
+      response.on('end', () => resolve(new Response([204, 205, 304].includes(response.statusCode!) ? null : Buffer.concat(chunks),
+        { status: response.statusCode, headers: response.headers as Record<string, string> })));
     });
     request.on('error', reject);
-    request.end(options.body);
+    request.end(options.body as string | undefined);
   });
 }
 
@@ -44,9 +53,9 @@ function signedToken(overrides = {}) {
   }).setProtectedHeader({ alg: 'RS256', kid: publicKey.kid }).sign(keys.privateKey);
 }
 
-async function service(context, production = false) {
+async function service(context: TestContext, production = false) {
   const directory = await mkdtemp(join(tmpdir(), 'insights-auth-'));
-  const text = (key, value) => ({ key, value: { stringValue: value } });
+  const text = (key: string, value: string) => ({ key, value: { stringValue: value } });
   await writeFile(join(directory, 'telemetry.jsonl'), `${JSON.stringify({ resourceSpans: [{
     resource: { attributes: [text('service.name', 'copilot-chat'), text('copilot_insights.organization.id', 'local-vscode')] },
     scopeSpans: [{ scope: { name: 'copilot-chat' }, spans: [{ traceId: '1'.repeat(32), spanId: '2'.repeat(16), attributes: [text('gen_ai.operation.name', 'chat')],
@@ -56,13 +65,13 @@ async function service(context, production = false) {
     telemetryPath: join(directory, 'telemetry.jsonl'), reviewPath: join(directory, 'reviews.json'), clock: () => NOW,
     authConfig: production ? config : { mode: 'local' }, keyResolver,
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(async () => {
     await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); });
     await rm(directory, { recursive: true, force: true });
   });
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const request = (path, accessToken, options = {}) => proxyFetch(`${base}${path}`, { ...options, headers: {
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const request = (path: string, accessToken?: string, options: RequestOptions = {}) => proxyFetch(`${base}${path}`, { ...options, headers: {
     ...(production ? { Host: 'insights.example.test' } : {}), ...options.headers,
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
   } });
@@ -105,7 +114,7 @@ test('every production data route and MCP request needs admin authorization; pub
   for (const [path, method] of [['/api/organizations', 'GET'], ['/api/projects', 'GET'], ['/api/insights', 'GET'], ['/api/reviews', 'POST'], ['/mcp', 'POST']]) {
     const response = await request(path, undefined, { method, headers: { 'X-MS-CLIENT-PRINCIPAL': 'spoofed-admin' } });
     assert.equal(response.status, 401, path);
-    assert.match(response.headers.get('www-authenticate'), /oauth-protected-resource\/mcp/);
+    assert.match(response.headers.get('www-authenticate')!, /oauth-protected-resource\/mcp/);
     assert.equal((await request(path, publisher, { method })).status, 403, path);
   }
   const body = JSON.stringify({ sessionId: 'publisher-window', project: 'example-project', clientTime: NOW });
@@ -151,7 +160,7 @@ test('human review writes require a delegated admin and retain origin and review
 test('production offers only the collected organization and never opens on fictional data', async (context) => {
   const { request } = await service(context, true);
   const admin = await signedToken();
-  const catalog = await (await request('/api/organizations', admin)).json();
+  const catalog: OrganizationCatalog = await (await request('/api/organizations', admin)).json();
   assert.deepEqual(catalog.organizations.map((entry) => entry.id), ['local-vscode']);
   assert.equal(catalog.defaultOrganizationId, 'local-vscode');
   const report = await (await request('/api/insights', admin)).json();
@@ -170,7 +179,7 @@ test('production hosts and origins are pinned and the same-origin redirect bridg
   assert.equal(bridge.headers.get('cross-origin-opener-policy'), null);
   assert.equal(bridge.headers.get('cache-control'), 'no-store');
   assert.equal(bridge.headers.get('x-frame-options'), 'SAMEORIGIN');
-  assert.match(bridge.headers.get('content-security-policy'), /frame-ancestors 'self'/);
+  assert.match(bridge.headers.get('content-security-policy')!, /frame-ancestors 'self'/);
   const shell = await request('/');
   assert.equal(shell.headers.get('cross-origin-opener-policy'), 'same-origin');
   assert.match(await shell.text(), /id="main"[^>]*hidden/);
@@ -183,15 +192,16 @@ test('the official MCP client can discover and query isolated project reports wi
   try {
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['get_insights_report', 'list_organizations', 'list_projects']);
-    assert.ok(tools.tools.every((tool) => tool.annotations.readOnlyHint && !tool.annotations.destructiveHint));
+    assert.ok(tools.tools.every((tool) => tool.annotations!.readOnlyHint && !tool.annotations!.destructiveHint));
     const organizations = await client.callTool({ name: 'list_organizations', arguments: {} });
-    assert.equal(organizations.structuredContent.organizations.length, 2);
+    assert.equal((organizations.structuredContent as OrganizationCatalog).organizations.length, 2);
     const catalog = await client.callTool({ name: 'list_projects', arguments: { organization: 'synthetic-demo' } });
-    const project = catalog.structuredContent.projects.find((entry) => entry.project === 'sample-alpha');
+    const project = (catalog.structuredContent as ProjectCatalog).projects.find((entry) => entry.project === 'sample-alpha')!;
     const result = await client.callTool({ name: 'get_insights_report', arguments: { organization: 'synthetic-demo', project: project.id, days: 7 } });
-    assert.equal(result.structuredContent.projectKey, project.id);
-    assert.ok(result.structuredContent.summary.calls > 0);
-    assert.equal(result.structuredContent.reviewToken, undefined);
+    const report = result.structuredContent as Snapshot & { reviewToken?: string };
+    assert.equal(report.projectKey, project.id);
+    assert.ok(report.summary.calls > 0);
+    assert.equal(report.reviewToken, undefined);
     const missing = await client.callTool({ name: 'get_insights_report', arguments: { organization: 'missing-organization' } });
     assert.equal(missing.isError, true);
     const invalid = await client.callTool({ name: 'get_insights_report', arguments: { path: '/etc/passwd' } });
@@ -204,13 +214,13 @@ test('an MCP initialization or session header never bypasses per-request product
   let accessToken = await signedToken();
   const client = new Client({ name: 'role-boundary-tests', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
-    fetch: (url, options) => proxyFetch(url, { ...options, headers: { ...Object.fromEntries(new Headers(options.headers)), Host: 'insights.example.test', Authorization: `Bearer ${accessToken}` } }),
+    fetch: (url, options) => proxyFetch(url, { ...options, headers: { ...Object.fromEntries(new Headers(options?.headers)), Host: 'insights.example.test', Authorization: `Bearer ${accessToken}` } }),
   });
   await client.connect(transport);
   try {
     assert.equal((await client.listTools()).tools.length, 3);
     const report = await client.callTool({ name: 'get_insights_report', arguments: {} });
-    assert.equal(report.structuredContent.organizationId, 'local-vscode');
+    assert.equal((report.structuredContent as Snapshot).organizationId, 'local-vscode');
     accessToken = await signedToken({ roles: [] });
     await assert.rejects(client.listTools(), { code: 403 });
   } finally { await client.close(); }

@@ -445,5 +445,6 @@ FodyWeavers.xsd
 deploy/local/.data/
 .copilot-insights/
 extensions/project-context/.vscode-test/
+apps/insights/dist/
 deploy/azure/*.bicepparam
 !deploy/azure/main.example.bicepparam

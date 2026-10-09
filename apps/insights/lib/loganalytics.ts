@@ -1,5 +1,22 @@
-import { AppError } from './errors.mjs';
-import { normalizeRecords } from './telemetry.mjs';
+import { AppError } from './errors.ts';
+import { normalizeRecords } from './telemetry.ts';
+import type { TelemetryInput } from './types.ts';
+
+export interface QueryTable {
+  columns: { name: string }[];
+  rows: unknown[][];
+}
+
+export type Fetcher = (url: string | URL, init: RequestInit) => Promise<Pick<Response, 'ok' | 'json'>>;
+
+interface SourceOptions {
+  workspaceId: unknown;
+  clientId?: string;
+  environment?: NodeJS.ProcessEnv;
+  fetcher?: Fetcher;
+  clock?: () => number;
+  endpoint?: string;
+}
 
 // Reads the collector's Azure Monitor export back into the same records the file adapter normalizes.
 // Mapping follows the pinned azure_monitor exporter (0.161): span and resource attributes, the scope name
@@ -12,26 +29,26 @@ const organizationPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const unavailable = () => new AppError('telemetry-unavailable',
   'Azure Monitor could not be queried. Check the portal identity, its Log Analytics Reader assignment, and private network access.');
 
-export function spanQuery(organizationId) {
+export function spanQuery(organizationId: string): string {
   return `union isfuzzy=true withsource=SourceTable AppDependencies, AppRequests, AppTraces
 | where tostring(Properties['copilot_insights.organization.id']) == '${organizationId}'
 | where SourceTable != 'AppTraces' or tostring(Properties['event.name']) in ('copilot_chat.user.feedback', 'copilot_chat.edit.feedback')
 | project SourceTable, TimeGenerated, Id, OperationId, ParentId, DurationMs, Properties`;
 }
 
-export function countQuery(organizationId) {
+export function countQuery(organizationId: string): string {
   return `union isfuzzy=true withsource=SourceTable AppTraces, AppMetrics
 | where tostring(Properties['copilot_insights.organization.id']) == '${organizationId}'
 | summarize Records = count() by SourceTable`;
 }
 
-function nanos(value) {
+function nanos(value: unknown): bigint | null {
   const match = typeof value === 'string' && /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z$/.exec(value);
   const seconds = match ? Date.parse(`${match[1]}Z`) : NaN;
-  return Number.isFinite(seconds) ? BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0')) : null;
+  return match && Number.isFinite(seconds) ? BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0')) : null;
 }
 
-function bag(value) {
+function bag(value: unknown): Record<string, unknown> {
   let parsed = value;
   if (typeof value === 'string') {
     try { parsed = JSON.parse(value); } catch { parsed = null; }
@@ -39,12 +56,13 @@ function bag(value) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new AppError('invalid-telemetry', 'A stored telemetry row has an unsupported shape. No partial totals are shown.');
   }
-  return parsed;
+  return parsed as Record<string, unknown>;
 }
 
-const rowsOf = (table) => table.rows.map((row) => Object.fromEntries(table.columns.map((column, index) => [column.name, row[index]])));
+const rowsOf = (table: QueryTable): Record<string, unknown>[] =>
+  table.rows.map((row) => Object.fromEntries(table.columns.map((column, index) => [column.name, row[index]])));
 
-export function rowsToRecords(table) {
+export function rowsToRecords(table: QueryTable): object[] {
   return rowsOf(table).map((row) => {
     const properties = bag(row.Properties);
     const attributes = Object.entries(properties).filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
@@ -57,7 +75,7 @@ export function rowsToRecords(table) {
         timeUnixNano: start?.toString(), traceId: row.OperationId || undefined, spanId: row.ParentId || undefined, attributes,
       }] }] }] };
     }
-    const duration = row.DurationMs;
+    const duration = row.DurationMs as number;
     return { resourceSpans: [{ resource, scopeSpans: [{ scope, spans: [{
       traceId: row.OperationId,
       spanId: row.Id,
@@ -72,21 +90,21 @@ export function rowsToRecords(table) {
 }
 
 export function logAnalyticsSource({ workspaceId, clientId, environment = process.env, fetcher = fetch, clock = Date.now,
-  endpoint = LOG_ANALYTICS_RESOURCE } = {}) {
+  endpoint = LOG_ANALYTICS_RESOURCE }: SourceOptions): (organizationId: string) => Promise<TelemetryInput> {
   if (typeof workspaceId !== 'string' || !guid.test(workspaceId)) {
     throw new AppError('invalid-configuration', 'INSIGHTS_LOG_ANALYTICS_WORKSPACE_ID must be the usage workspace ID (a GUID).');
   }
-  let token = null;
-  let tokenRequest = null;
-  const cache = new Map();
+  let token: { value: string; expiresAt: number } | null = null;
+  let tokenRequest: Promise<string> | null = null;
+  const cache = new Map<string, { expiresAt: number; result: Promise<TelemetryInput> }>();
 
-  function accessToken() {
+  function accessToken(): string | Promise<string> {
     if (token && token.expiresAt - 300_000 > clock()) return token.value;
     tokenRequest ??= requestToken().finally(() => { tokenRequest = null; });
     return tokenRequest;
   }
 
-  async function requestToken() {
+  async function requestToken(): Promise<string> {
     if (!environment.IDENTITY_ENDPOINT || !environment.IDENTITY_HEADER) {
       throw new AppError('telemetry-unavailable', 'Log Analytics queries need the portal\'s managed identity. Run it in Azure Container Apps with that identity assigned.');
     }
@@ -102,7 +120,7 @@ export function logAnalyticsSource({ workspaceId, clientId, environment = proces
     return token.value;
   }
 
-  async function query(text) {
+  async function query(text: string): Promise<QueryTable> {
     const response = await fetcher(`${endpoint}/v1/workspaces/${workspaceId}/query`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json' },
@@ -116,7 +134,7 @@ export function logAnalyticsSource({ workspaceId, clientId, environment = proces
     return table;
   }
 
-  async function load(organizationId) {
+  async function load(organizationId: string): Promise<TelemetryInput> {
     if (!organizationPattern.test(organizationId)) throw new AppError('invalid-organization', 'The organization ID is not valid.');
     try {
       const [rows, counts] = await Promise.all([query(spanQuery(organizationId)), query(countQuery(organizationId))]);

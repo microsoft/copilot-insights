@@ -75,6 +75,7 @@ $sampleFolder = Join-Path ([IO.Path]::GetTempPath()) "copilot-insights-sample-$(
 New-Item -ItemType Directory -Path $sampleFolder | Out-Null
 'Hello from a disposable Copilot Insights example.' | Set-Content (Join-Path $sampleFolder 'hello.txt')
 $extensionPath = (Resolve-Path ./extensions/project-context).Path
+docker run --rm --mount "type=bind,source=$extensionPath,target=/extension" --workdir /extension node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 sh -c 'npm ci --ignore-scripts --no-audit --no-fund && npm run compile'
 code --new-window --extensionDevelopmentPath $extensionPath $sampleFolder
 ```
 
@@ -82,7 +83,7 @@ This configures OTLP/HTTP to `http://localhost:4318`, with **content and identit
 
 The collector assigns `copilot_insights.organization.id=local-vscode`. Do not add an organization ID to the VS Code settings: client-supplied organization values are overwritten, and choosing a different portal organization cannot move or relabel events.
 
-The source-loaded **Copilot Insights Project Context** extension needs no build step. Click **Insights: select project** in the status bar and enter `sample-alpha` for this disposable example. The selection is stored in the sample folder's `.copilot-insights/project.json`, which the companion keeps out of source control. Only the project ID and native window ID are registered; workspace paths, credentials, and the rest of the document are not sent. Other tools can set the project by writing the same file.
+The source-loaded **Copilot Insights Project Context** extension is written in TypeScript; the `docker run` line compiles it with the same pinned Node image as the portal, so no host Node.js installation is needed. Click **Insights: select project** in the status bar and enter `sample-alpha` for this disposable example. The selection is stored in the sample folder's `.copilot-insights/project.json`, which the companion keeps out of source control. Only the project ID and native window ID are registered; workspace paths, credentials, and the rest of the document are not sent. Other tools can set the project by writing the same file.
 
 **Select the project before doing Copilot work, then accept the reload prompt.** The first selection already applies from that moment; activity from before it stays **Unattributed**, and the reload starts the window's session under the project. Changing to a different project, or clearing it, requires a reload. If VS Code reuses its window ID and the status still requests a reload, close and reopen that sample window. A running window is never rebound to another project. Without a valid selection or completed registration, new activity remains **Unattributed**. [Project attribution](docs/projects.md) explains boundaries, simultaneous windows, and the first-folder rule for multi-root workspaces.
 
