@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a problem in the collector, portal, scripts, companion, templates, or documentation.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security vulnerabilities privately as described in [SECURITY.md](https://github.com/microsoft/copilot-insights/blob/main/SECURITY.md), not here.
+
+        Use synthetic examples only. Never paste access tokens, settings snapshots, raw telemetry, conversation content, or tenant, subscription, or host names from a real deployment.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Collector or privacy pipeline
+        - Insights portal or admin MCP
+        - Project companion extension
+        - Client setup or restore scripts
+        - Azure template
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A minimal synthetic reproduction.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit or release, operating system, and Docker and PowerShell versions. For client problems, add the VS Code and Copilot Chat versions and the harness (Local, Agent Host, or CLI).
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Reviewed, redacted error messages only.
+      render: text
+  - type: checkboxes
+    id: data-check
+    attributes:
+      label: Data check
+      options:
+        - label: This report contains no credentials, raw telemetry, conversation content, or identifiers from a real deployment.
+          required: true
