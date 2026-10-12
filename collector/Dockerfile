@@ -3,7 +3,7 @@ FROM otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1
 
 LABEL org.opencontainers.image.source="https://github.com/microsoft/copilot-insights" \
       org.opencontainers.image.description="OpenTelemetry Collector with the Copilot Insights privacy pipeline" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="Apache-2.0 AND MIT"
 
 COPY config/ /etc/copilot-insights/
 
