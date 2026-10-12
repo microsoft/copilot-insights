@@ -9,3 +9,36 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+
+  - package-ecosystem: "npm"
+    directories: ["/apps/insights", "/extensions/project-context"]
+    groups:
+      npm:
+        patterns: ["*"]
+    ignore:
+      # Type packages track the runtimes: Node 24 for the portal, engines.vscode for the companion.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/vscode"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "docker"
+    directories: ["/apps/insights", "/collector"]
+    ignore:
+      # A Node major also changes CI, engines, and the README walkthrough.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "docker-compose"
+    directory: "/deploy/local"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
