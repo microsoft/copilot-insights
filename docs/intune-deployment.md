@@ -68,7 +68,7 @@ Never distribute access/refresh tokens or shared client secrets through Intune p
 2. Complete privacy testing beyond the current [known filter gaps](architecture.md#processing-pipeline), including arrays, links, exemplars, logs, queues, and error paths. A harmless local test is not permission to collect real-user data.
 3. Test Intune install/detection/remediation/uninstall in the chosen execution contexts, repeated deployment, policy conflicts, upgrades, reboot/logon, offline reconnect, token expiry/revocation, and interrupted installation.
 4. Prove unsupported/unauthorized records are rejected, approved records reach durable storage, and health reporting contains no raw telemetry or credentials. Use synthetic probes distinguishable from employee usage.
-5. Approve access, retention, collection notice, support and emergency containment. The local anonymous portal is not an authenticated team service; ship shared authorization/querying separately before making analytics accessible to the organization.
+5. Approve access, retention, collection notice, support and emergency containment. The local anonymous portal is not an authenticated team service; use the Entra-protected [production mode](production-access.md) and complete its [live acceptance checklist](production-access.md#5-live-acceptance-checklist) before making analytics accessible to the organization.
 
 ## Rollback and containment
 
