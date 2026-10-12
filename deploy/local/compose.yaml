@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
 
   dashboard:
-    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.6.0@sha256:064b50d557fcaffd10f06bf79ba4069bd50994a84034f1a0fc35c165500482d7
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.6.1@sha256:613f297a274958abd85e7b71664f51fb42b0ddeb697ebd4c159677774433345b
     environment:
       ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
     ports:
