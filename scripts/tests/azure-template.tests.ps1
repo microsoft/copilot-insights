@@ -54,6 +54,19 @@ Test-Case 'The insights portal is gated, private, Entra-protected, and reads Log
     Assert-That ($storage.properties.publicNetworkAccess -eq 'Disabled') 'State storage is public.'
     Assert-That ($storage.properties.allowBlobPublicAccess -eq $false) 'State storage allows public blobs.'
 }
+Test-Case 'Both apps run the one image, each in its own role' {
+    $collector = Get-App 'collector'
+    $insights = Get-App 'insights'
+    foreach ($app in @($collector, $insights)) {
+        Assert-That ($app.properties.template.containers[0].image -match "parameters\('containerImage'\)") 'An app does not run the containerImage parameter.'
+    }
+    $collectorEnvironment = @{}
+    foreach ($entry in $collector.properties.template.containers[0].env) { $collectorEnvironment[$entry.name] = $entry.value }
+    Assert-That ($collectorEnvironment.COPILOT_INSIGHTS_ROLE -eq 'collector') 'The collector app must run only the collector.'
+    Assert-That ($collectorEnvironment.COPILOT_INSIGHTS_COLLECTOR_PROFILE -eq 'azure') 'The collector must use the authenticated profile.'
+    $portalRole = @($insights.properties.template.containers[0].env | Where-Object { $_.name -eq 'COPILOT_INSIGHTS_ROLE' }).value
+    Assert-That ($portalRole -eq 'portal') 'The portal app must not also start a collector.'
+}
 Test-Case 'Ingestion remains private and HTTPS-only' {
     $environment = Get-Resource 'Microsoft.App/managedEnvironments'
     $collector = Get-App 'collector'

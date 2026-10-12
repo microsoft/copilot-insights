@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.47.16.16243",
-      "templateHash": "2449601206287024740"
+      "templateHash": "13765126162992629728"
     }
   },
   "parameters": {
@@ -51,25 +51,18 @@
         "description": "Set to false for the first deployment, push the image, then redeploy with true."
       }
     },
-    "collectorImage": {
+    "containerImage": {
       "type": "string",
-      "defaultValue": "copilot-insights-collector:0.1.0",
+      "defaultValue": "copilot-insights:0.1.0",
       "metadata": {
-        "description": "Collector image as repository:tag in the registry this template creates."
+        "description": "Copilot Insights image as repository:tag in the registry this template creates. The collector and portal apps run it in different roles."
       }
     },
     "deployInsights": {
       "type": "bool",
       "defaultValue": false,
       "metadata": {
-        "description": "Set to true after pushing the insights image and registering its Entra applications (docs/production-access.md)."
-      }
-    },
-    "insightsImage": {
-      "type": "string",
-      "defaultValue": "copilot-insights-review:0.1.0",
-      "metadata": {
-        "description": "Insights portal image as repository:tag in the registry this template creates."
+        "description": "Set to true after registering the portal Entra applications (docs/production-access.md)."
       }
     },
     "organizationName": {
@@ -759,12 +752,20 @@
           "containers": [
             {
               "name": "collector",
-              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('collectorImage'))]",
+              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('containerImage'))]",
               "resources": {
                 "cpu": "[json('0.5')]",
                 "memory": "1Gi"
               },
               "env": [
+                {
+                  "name": "COPILOT_INSIGHTS_ROLE",
+                  "value": "collector"
+                },
+                {
+                  "name": "COPILOT_INSIGHTS_COLLECTOR_PROFILE",
+                  "value": "azure"
+                },
                 {
                   "name": "CI_ORGANIZATION_ID",
                   "value": "[parameters('organizationId')]"
@@ -901,12 +902,16 @@
           "containers": [
             {
               "name": "insights",
-              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('insightsImage'))]",
+              "image": "[format('{0}/{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), '2023-07-01').loginServer, parameters('containerImage'))]",
               "resources": {
                 "cpu": "[json('0.5')]",
                 "memory": "1Gi"
               },
               "env": [
+                {
+                  "name": "COPILOT_INSIGHTS_ROLE",
+                  "value": "portal"
+                },
                 {
                   "name": "INSIGHTS_MODE",
                   "value": "production"

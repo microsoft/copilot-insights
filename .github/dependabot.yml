@@ -26,7 +26,7 @@ updates:
       default-days: 7
 
   - package-ecosystem: "docker"
-    directories: ["/apps/insights", "/collector"]
+    directory: "/"
     ignore:
       # A Node major also changes CI, engines, and the README walkthrough.
       - dependency-name: "node"

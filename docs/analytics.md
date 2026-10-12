@@ -86,7 +86,7 @@ These are pseudonymous diagnostic identifiers, not authorization claims. The cat
 - In local mode, browser runtime requests stay on this application's origin. A deliberate diagnostic link navigates to the separate local Aspire site. Production sign-in additionally contacts Microsoft Entra; scripts, fonts, and other portal assets remain locally served. Neither mode loads trackers, private clients, or third-party CDN scripts.
 - A second narrow projection discards user/account identities, prompts, responses, code, log bodies, events, links, arbitrary attributes, raw error messages, and file paths. Only validated model/tool labels, operation measures, and validated trace/span, conversation, window/session, and tool-call identifiers reach the evidence UI. Correlation identifiers remain potentially sensitive diagnostic metadata, not proof of an anonymous dataset. This projection does **not** qualify the entire upstream privacy pipeline.
 - Static routes are explicitly allow-listed. The server cannot return the collector file, review state file, source modules, or arbitrary filesystem paths.
-- Compose publishes the site only on `127.0.0.1:3000`. The container runs as a non-root user with a read-only root filesystem, dropped capabilities, and a read-only telemetry mount. Only its review-state volume is writable, alongside ephemeral `/tmp`.
+- Compose publishes the site only on `127.0.0.1:3000`. The container runs as a non-root user with a read-only root filesystem and dropped capabilities. Only the telemetry directory, which its collector writes, and the review-state volume are writable, alongside ephemeral `/tmp`.
 - Review writes require the exact same origin, a per-process review token, an approved status, a signal that still applies in the selected scope, and the current decision revision. Unknown fields, including free-text notes, are rejected. This protects the local workflow against cross-origin writes and stale decisions; it is **not** user authentication.
 - Decisions contain only the signal ID, organization ID, project key, source, fixed status, revision, timestamp, and the evidence count and newest evidence time seen when the decision was saved. They are stored atomically in the `insights-reviews` volume alongside the separate window registry. The latest 2,000 decisions are retained; this is not an immutable audit log. Native Node development uses ignored `deploy/local/.data` storage. Legacy decisions remain stored without silently acquiring organization/project scope or matching the current signal IDs.
 - A signal ID combines the organization, project filter, source, window length, and rule, so a decision survives refreshes and UTC day changes. Evidence that is newer or more numerous than at decision time marks it **New evidence since review** rather than resetting it; saving again records the current evidence. Another scope (including all projects) or window length cannot inherit an old decision. Demo evidence is date-relative and independent of native activity.
@@ -103,6 +103,7 @@ Organization deployment follows the [Intune plan](intune-deployment.md), not emp
 ## Implementation and checks
 
 - [Server](../apps/insights/server.ts): local HTTP boundary, static allow-list, narrow API, and write validation.
+- [Launcher](../apps/insights/start.ts): runs the collector, the portal, or both in one container (`COPILOT_INSIGHTS_ROLE`), and stops the container when either exits.
 - [Telemetry projection](../apps/insights/lib/telemetry.ts) and [analytics](../apps/insights/lib/analytics.ts): incremental JSONL reading, canonical aggregates, and rule-based findings.
 - [Log Analytics source](../apps/insights/lib/loganalytics.ts): managed-identity queries of the usage workspace for Azure deployments.
 - [Review store](../apps/insights/lib/reviews.ts): atomic local decisions and revision conflicts.
@@ -110,10 +111,10 @@ Organization deployment follows the [Intune plan](intune-deployment.md), not emp
 - [Window registry](../apps/insights/lib/context.ts), [authorization](../apps/insights/lib/auth.ts), and [MCP](../apps/insights/lib/mcp.ts): project attribution and role-protected reports.
 - [Regression tests](../apps/insights/tests/): counting, unknown values, replay conflicts, source/project isolation, projection canaries, registration lifecycle, signed-token authorization, MCP clients, host/origin restrictions, and review persistence.
 
-After building the Compose images, run the tests from the repository root:
+After building the Compose image, run the tests from the repository root:
 
 ```powershell
-docker run --rm --network none --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" copilot-insights-review:local node --test
+docker run --rm --network none --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" copilot-insights:local node --test
 docker compose -f deploy/local/compose.yaml exec -T insights node --check dist/web/app.js
 ```
 

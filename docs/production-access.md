@@ -40,11 +40,12 @@ Create a separate single-tenant **SPA/public client** registration for the porta
 
 ## 3. Configure the service behind HTTPS
 
-Build the [insights Docker image](../apps/insights/Dockerfile). Builds install pinned dependencies from the lockfile; restricted environments can supply an approved registry through the `NPM_REGISTRY` build argument. Do not embed registry credentials or private feed URLs in source or lockfiles.
+Build the [Copilot Insights image](../Dockerfile) and run it with `COPILOT_INSIGHTS_ROLE=portal`, so that it does not also start a collector. Builds install pinned dependencies from the lockfile; restricted environments can supply an approved registry through the `NPM_REGISTRY` build argument. Do not embed registry credentials or private feed URLs in source or lockfiles.
 
 Set these deployment values through your infrastructure configuration, outside source control:
 
 ```dotenv
+COPILOT_INSIGHTS_ROLE=portal
 NODE_ENV=production
 INSIGHTS_MODE=production
 INSIGHTS_PUBLIC_ORIGIN=https://insights.example.test
