@@ -4,9 +4,9 @@ Initial run: **October 3, 2026 UTC (October 2, 2026 PDT)**. Cleanup verified: **
 
 ## Result
 
-**The previous Azure validation deployment has been removed. End-to-end authenticated cloud telemetry validation was not completed and is not a passing result.** Before cleanup, the supplied ownership reference was accepted and the ingestion API was registered in the intended tenant with assignment-required token issuance. The collector was activated with the real application audience and was healthy. The validation runner blocked subsequent diagnostic commands before execution, including a credential-free TLS probe. This was not an observed Azure authentication rejection and must not be reported as an ingestion test result. This template did not deploy a cloud analytics portal.
+**The previous Azure validation deployment has been removed. End-to-end authenticated cloud telemetry validation was not completed and is not a passing result.** Before cleanup, the supplied ownership reference was accepted and the ingestion API was registered in the intended tenant with assignment-required token issuance. The collector was activated with the real application audience and was healthy. Subsequent diagnostic commands, including a credential-free TLS probe, were blocked by the validation environment before they ran. This was not an observed Azure authentication rejection and must not be reported as an ingestion test result. The template used for this run did not yet include the cloud analytics portal.
 
-The [native local-client verification](local-validation.md#native-client-emission-and-restoration) and later [organization walkthrough](local-validation.md#organization-walkthrough) remain separate local evidence. Their VS Code settings were restored byte for byte. Neither exercise replayed local captures to Azure or uploaded real-work telemetry.
+The [native local-client verification](local-validation.md#native-client-emission-and-restoration) and later [organization walkthrough](local-validation.md#earlier-native-organization-walkthrough) remain separate local evidence. Their VS Code settings were restored byte for byte. Neither exercise replayed local captures to Azure or uploaded real-work telemetry.
 
 ## Verified
 
@@ -14,7 +14,7 @@ This table records the historical deployment checks, not currently running resou
 
 | Check | Observed result |
 |---|---|
-| New resource group in the requested subscription | Created in West US 2, tagged for isolated synthetic-only validation |
+| New resource group in the target subscription | Created in West US 2, tagged for isolated synthetic-only validation |
 | ARM deployment | Infrastructure deployment and collector-only activation both `Succeeded`; activation reused the already-uploaded certificate without reopening its private key |
 | Collector activation | One running collector with a healthy revision, non-root process, authenticated profile, and the actual target-tenant audience |
 | Ingestion registration | Single-tenant API with v2 access tokens, administrator diagnostic scope, Azure CLI diagnostic preauthorization, assignment required, and one assigned operator |
@@ -28,7 +28,7 @@ This table records the historical deployment checks, not currently running resou
 | Usage workspace query | Target-tenant authenticated query succeeded and returned zero usage rows at the baseline; no authorized test telemetry had been sent |
 | Local certificate trust | Public certificate trusted in `CurrentUser\Root`, not machine-wide trust |
 | Actual local HTTPS request | Normal Windows certificate validation accepted a loopback HTTPS listener using the generated certificate; an address absent from its SANs was rejected with a hostname mismatch |
-| Certificate rollback | Disposable lifecycle test exercised trust, untrust, and removal without leaving its test certificate; the requested development certificate remains trusted for the lab |
+| Certificate rollback | Disposable lifecycle test exercised trust, untrust, and removal without leaving its test certificate |
 | Azure-hosted one-click entry | A versioned, RBAC-protected Template Spec contains the same JSON values as the local artifact and passed Azure provider validation |
 | Browser entry | The Template Spec deployment link reached Azure sign-in; an authenticated interactive deployment form was not exercised |
 | Public GitHub badge | Correct encoded ARM-template URL is in the README, but the raw URL returned 404 before publication; it is not a verified live public deployment button |
@@ -49,7 +49,7 @@ The tested Azure CLI's raw Graph requests used its default directory despite a s
 - Actual cloud HTTPS trust/hostname verification from a diagnostic client.
 - Managed-identity telemetry export, durable traces/metrics/logs in the usage workspace, or stored-data privacy canaries.
 - A client network route/DNS connection to this new private environment.
-- An Azure-backed analytics adapter, authenticated shared portal, or durable shared human-review workflow. The existing portal remains a local file/demo evaluation service.
+- The Azure-hosted portal and its Log Analytics adapter, which were added to the template after this run, or a durable shared human-review workflow. Neither has been deployed or verified in a live tenant.
 - Intune-managed client packaging, lifecycle, trust distribution, or production authentication.
 
 An empty workspace is not proof of filtering, a healthy collector is not proof of ingestion, and a locally trusted certificate is not proof of Azure endpoint TLS. The placeholder audience used in the earlier infrastructure-only phase was replaced with the verified target-tenant registration before collector activation. No native or fixture telemetry was replayed to cloud storage to manufacture an analytics result.
@@ -59,12 +59,12 @@ An empty workspace is not proof of filtering, a healthy collector is not proof o
 1. A future cloud test requires a fresh isolated deployment and approved ingestion identity: the previous resource group, Template Spec, and active registration are deleted. Follow the [deployment guide](infrastructure.md#deploy), reconfirm operator assignment and certificate validity, and keep real deployment values private. Do not assume a recorded endpoint or private deployment link still exists.
 2. Obtain a permitted private diagnostic execution path. Do not work around execution restrictions, expose ingestion publicly, export user credentials into another workload, or disable bearer-token/TLS checks to make a test pass.
 3. Verify actual HTTPS/SNI and trust, run the synthetic [remote verification](infrastructure.md#verify) with explicit `-TenantId`, and prove missing/invalid/wrong-resource token rejection. Verify all three span operations, the retained metric families and feedback log, and zero stored canaries after ingestion delay.
-4. Compose insights from those actual stored cloud records and implement the missing Azure-backed portal/shared-review boundary. Do not relabel the local file or demo portal as an Azure data source. A separate native-client cloud exercise must use a disposable workspace and restore settings afterward.
+4. Deploy the portal with `deployInsights = true` and check that its totals match those actual stored cloud records before relying on it. Do not relabel the local file or demo portal as an Azure data source. A separate native-client cloud exercise must use a disposable workspace and restore settings afterward.
 5. Complete the [Intune production gates](intune-deployment.md) before any organization rollout. Administrator validation scripts are not employee enrollment instructions.
 
 ## Retention and cleanup
 
-At the user's request, cleanup was completed and verified on **October 3, 2026**:
+Cleanup was completed and verified on **October 3, 2026**:
 
 | Cleanup target | Verification |
 |---|---|
@@ -75,6 +75,6 @@ At the user's request, cleanup was completed and verified on **October 3, 2026**
 
 Only the recorded isolated deployment and its owned directory objects were removed. Directory deletion is not a claim of permanent purge of recoverable deleted objects. The deleted Template Spec's private deployment link is no longer usable; the public template source and deployment instructions remain in the repository. Review/expiry tags did not perform this cleanup automatically.
 
-Deployment metadata and validation evidence live outside the repository under the current user's `%LOCALAPPDATA%\CopilotInsights\AzureValidation` directory. Certificate/private-key material is in the helper's restricted certificate directory. Temporary plaintext secure-parameter files were removed after deployment/validation. Do not publish these private directories or raw cloud exports.
+Deployment metadata and validation evidence were kept outside the repository, and certificate/private-key material stayed in the certificate helper's restricted directory. Temporary plaintext secure-parameter files were removed after deployment/validation. Do not publish such private records or raw cloud exports.
 
-The separately requested local development certificate and its current-user trust were retained; removing cloud resources does not require removing that local lab setup. To reverse it separately, use [the certificate helper's `Untrust` and `Remove` commands](infrastructure.md#development-https-certificate). Do not delete unrelated registrations, client networks, or certificates.
+Removing cloud resources does not remove a local development certificate or its current-user trust. To reverse those separately, use [the certificate helper's `Untrust` and `Remove` commands](infrastructure.md#development-https-certificate). Do not delete unrelated registrations, client networks, or certificates.

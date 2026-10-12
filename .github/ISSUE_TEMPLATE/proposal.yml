@@ -1,0 +1,24 @@
+name: Proposal or design question
+description: Propose a feature or collection change, or ask a design question.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a new feature or collection field, read the [architecture](https://github.com/microsoft/copilot-insights/blob/main/docs/architecture.md) and [data contract](https://github.com/microsoft/copilot-insights/blob/main/docs/data-contract.md) first. Use synthetic examples only.
+  - type: textarea
+    id: request
+    attributes:
+      label: Proposal or question
+      description: The use case, and what you would like to change or understand.
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data implications
+      description: New fields, signals, identifiers, or retention. Leave empty if nothing new is collected.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: How the change can be tested, for example with synthetic canaries or golden fixtures.

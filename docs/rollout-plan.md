@@ -13,7 +13,7 @@ This table compares the repository with the milestones below. It is the place to
 | M2: Intune-managed client | Plan defined; diagnostics implemented | [Intune production plan](intune-deployment.md); Windows diagnostic setup/forwarder; temporary local override and byte-exact [restore](../scripts/restore-client.ps1) with tests | Signed Intune package; managed policy/startup/detection/remediation/rollback; supported production credential lifecycle |
 | M3: Analytics | Local evaluation implemented; cloud path implemented, not verified | [Local review workspace](analytics.md): bounded collector-file projection, aggregate views, deterministic findings, coverage/freshness, and persistent local decisions with regression tests. Log Analytics query adapter and Entra-protected portal deployment in the [Azure template](infrastructure.md#deploy-from-your-checkout) | Live verification of the cloud backend mapping, production counting/retention policy, and audited team review |
 | M4: Opt-in pilot | Not started | | Cohort, collection notice, support owner, daily review |
-| M5: Initial release | Not started | License, documentation, CI | Signed image and release provenance, support matrix, release notes |
+| M5: Initial release | In progress | License, documentation, CI, and a tag-triggered workflow that publishes images with provenance and SBOM attestations | Image signing, support matrix, the first tagged release and its notes |
 
 ## First delivery
 

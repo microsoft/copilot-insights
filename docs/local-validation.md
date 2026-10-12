@@ -6,19 +6,19 @@
 
 ## Project, authorization, and MCP checks
 
-Completed on **October 4, 2026 UTC** after replacing the earlier private engagement contract with the generic `.copilot-insights/project.json` contract and a status-bar project selector in the open-source companion, then fixing the review findings below. The local collector and insights images were rebuilt and their containers recreated; the existing native capture was kept. No Azure resources, tenant assignments, or VS Code settings were changed. Every end-to-end check below used disposable containers on separate loopback ports with in-memory state, so the native capture file was only read.
+Completed on **October 4, 2026 UTC** after introducing the generic `.copilot-insights/project.json` contract and the companion's status-bar project selector, then fixing the review findings below. The local collector and insights images were rebuilt and their containers recreated; the existing native capture was kept. No Azure resources, tenant assignments, or VS Code settings were changed. Every end-to-end check below used disposable containers on separate loopback ports with in-memory state, so the native capture file was only read.
 
 | Check | Observed result |
 |---|---|
 | Service tests, built image, external networking disabled | **52 passed**: analytics, stable review identities with new-evidence flags, incremental capture reading after appends/truncation/rewrites/replacement, registration lifecycle with device-clock boundaries, renewal and 32-day retention, project/review isolation, legacy review state, production without the demo, generated signed-JWT validation, HTTP protections, and the official MCP client |
 | Companion tests with a mocked VS Code API | **10 passed**: generic project file, status-bar selection and clearing, reload prompt after the first selection, device time and clock-skew message, ignore file, reload prompt, workspace/endpoint invalidation and closure retry, bounded reads, and private-field exclusion |
 | PowerShell suites | Setup-client (run from a VS Code terminal that inherits Copilot OpenTelemetry variables), Entra role assignment (**5 passed**), telemetry reader, fixture contract (**12 passed**), and remote verification (**10 passed**) |
-| Native window, real Copilot spans | This chat's VS Code window registered without a project, then selected `contoso.alpha` using the companion's own registration code (not its VS Code host). The selection applied without a reload: subsequent native model and tool spans were attributed, while earlier spans stayed unattributed. A later switch returned `409`, and the closed project kept only the 26 spans inside its interval. A registration with the device clock 10 minutes behind was refused with `clock-skew`. |
+| Native window, real Copilot spans | A running native VS Code window registered without a project, then selected `contoso.alpha` using the companion's own registration code (not its VS Code host). The selection applied without a reload: subsequent native model and tool spans were attributed, while earlier spans stayed unattributed. A later switch returned `409`, and the closed project kept only the 26 spans inside its interval. A registration with the device clock 10 minutes behind was refused with `clock-skew`. |
 | Live review decision | Under **All projects**, a decision saved as **Reviewed** stayed **Reviewed** after new native spans arrived and showed **New evidence since review** in the review queue. |
 | Capture reading | The first report read the 15.5 MB native capture in 417 ms; later reports parsed only appended records in 24–35 ms. Recreating the collector kept the capture; metrics now arrive in `vscode-metrics.jsonl` instead. |
 | Synthetic pipeline through the real collector | **9 passed**: two projects, an unattributed and an unregistered window, two conversations in one window, switching, a delayed export inside the closed interval, and spoofed organization/project/identity attributes removed by the collector |
 | Collector privacy checks (`verify.ps1`, disposable collector) | **36 passed**, with spans/logs and metrics in separate files; a collector restart kept both files |
-| MCP with the official SDK | Three tools; every `list_projects` scope's `get_insights_report` matched the HTTP report and snapshot ID; no review tokens; the retired `engagement` argument is rejected |
+| MCP with the official SDK | Three tools; every `list_projects` scope's `get_insights_report` matched the HTTP report and snapshot ID; no review tokens; an unknown argument is rejected |
 | Production mode with fictional IDs | Startup without `INSIGHTS_MODE` fails; foreign hosts get `403`; report/MCP and registration routes return `401` with admin and `Context.Publish` challenges; loopback health and the container health check pass |
 | Browser portal | Project selector and deep links, demo `sample-alpha` scope (51 of 136 seven-day model calls), quality facts, review save/reload, scope isolation, keyboard tabs/dialogs, no page overflow at 420 or 1,280 CSS pixels, no console errors, and same-origin requests only. Links to an unknown project or organization offer **Show all projects** or **Open the default organization**; while the catalog loads, the banner shows neutral text instead of demo text. |
 
@@ -69,9 +69,9 @@ All **33 analytics/API tests** and the setup/restore, telemetry-reader, fixture-
 
 Reviewed the [quick start](../README.md), [participant guide](client-setup.md), [infrastructure guide](infrastructure.md), [architecture](architecture.md), [data contract](data-contract.md), and [rollout status](rollout-plan.md). M3 was initially not started; the local review prototype was added afterward as described in the [analytics guide](analytics.md). The native fallback and initial two-container Docker evidence below are retained as validation history.
 
-The first validation used a native Windows fallback because Docker was not installed. Docker Desktop was then installed per-user with the WSL2 Linux backend, after verifying the installer's Docker Inc. signature and SHA-256. No reboot was required. The native services were stopped, and the unchanged [Compose deployment](../deploy/local/compose.yaml) was built and started successfully. The Docker rerun verifies the Linux collector image, Compose networking, and Windows bind-mount write permissions as well as the shared pipeline.
+The first validation used a native Windows fallback before Docker was available. The native services were then stopped, and the unchanged [Compose deployment](../deploy/local/compose.yaml) was built and started successfully with Docker Desktop's WSL2 Linux backend. The Docker rerun verifies the Linux collector image, Compose networking, and Windows bind-mount write permissions as well as the shared pipeline.
 
-No Azure resources were deployed **during this local run**; the later [infrastructure-only Azure validation](azure-validation.md) is separate and does not qualify cloud ingestion. The earlier synthetic runs did not change normal VS Code settings. The native exercise below temporarily changed them with explicit permission and restored them byte for byte afterward. Only a harmless disposable task was used, not private repositories or real-work conversations.
+No Azure resources were deployed **during this local run**; the later [infrastructure-only Azure validation](azure-validation.md) is separate and does not qualify cloud ingestion. The earlier synthetic runs did not change normal VS Code settings. The native exercise below temporarily changed them and restored them byte for byte afterward. Only a harmless disposable task was used, not private repositories or real-work conversations.
 
 ### Local analytics update
 
@@ -169,7 +169,7 @@ Verification also now checks output tokens, derived model latency, preserved err
 
 ## Can insights be composed?
 
-**The local collector-file adapter now composes aggregate views and deterministic findings.** The original one-trace calculation below is also the analytics test fixture; there is still no authorized cloud query adapter:
+**The local collector-file adapter now composes aggregate views and deterministic findings.** The original one-trace calculation below is also the analytics test fixture:
 
 | Measure | Result |
 |---|---|
@@ -184,13 +184,13 @@ Verification also now checks output tokens, derived model latency, preserved err
 
 These are fixture expectations, not production analytics results. Tokens were taken from the model span only, not added to parent-agent totals. The independent cumulative tool-counter fixture has value 3; it must not be added to the tool-span count or summed across repeated samples. No cost or productivity inference was made.
 
-Still needed for shared deployment: an authorized cloud store/query adapter, production cross-runtime counting and replay guarantees, cumulative/delta metric handling, retention and access policy, and an audited shared workflow. The local adapter has bounded-file replay handling and golden-fixture tests, but does not qualify those production requirements. See the [counting contract](data-contract.md#counting-and-correlation).
+Still needed for shared deployment: live verification of the later [Log Analytics query adapter](infrastructure.md#deploy-from-your-checkout), production cross-runtime counting and replay guarantees, cumulative/delta metric handling, retention and access policy, and an audited shared workflow. The local adapter has bounded-file replay handling and golden-fixture tests, but does not qualify those production requirements. See the [counting contract](data-contract.md#counting-and-correlation).
 
 ## Is the UX site there?
 
 **Yes for local analytics and human review, as well as diagnostics.** The new [review site](analytics.md) is available on loopback port 3000. The separate Aspire site still has structured logs, trace waterfalls with attributes, and per-instrument metric graphs/tables at `http://127.0.0.1:18888`.
 
-The project-owned frontend and local API now provide usage/tokens/latency/errors, model/tool breakdowns, source/time filters, visible unknown/stale states, and local review decisions. An Azure analytics deployment, authorized cohort filters, and shared authentication are still absent. Server-side authorization is required before any shared deployment; hiding or filtering rows in the browser is not sufficient.
+The project-owned frontend and local API now provide usage/tokens/latency/errors, model/tool breakdowns, source/time filters, visible unknown/stale states, and local review decisions. An Entra-protected [production mode](production-access.md) and Azure deployment were added later but are not yet verified in a live tenant, and per-project authorization is not implemented. Server-side authorization is required before any shared deployment; hiding or filtering rows in the browser is not sufficient.
 
 The Aspire diagnostic dashboard is anonymous and has no persistent volume. It is not a team service or durable analytics store. Direct navigation to `/traces`, `/metrics`, and `/structuredlogs` works; automated sidebar clicks were intermittently intercepted by the dashboard's responsive navigation overlay in the embedded browser, so this is not a complete navigation/accessibility qualification. The new review site's separate volume persists decisions only, not raw telemetry or a shared audit history.
 
@@ -204,7 +204,7 @@ The Aspire diagnostic dashboard is anonymous and has no persistent volume. It is
 
 These are local functional checks, not a complete accessibility audit or a qualification for authenticated, shared deployment.
 
-Compose configuration and whitespace checks passed. An optional standalone YAML parser check for the workflow and Compose file could not run because npm registry requests failed with TLS handshake errors, including a retry from the host. No TLS verification was disabled and no project dependencies were added.
+Compose configuration and whitespace checks passed.
 
 ## Reproduce the Docker deployment
 
@@ -220,7 +220,7 @@ docker compose -f deploy/local/compose.yaml ps
 
 Open the analytics/review site at `http://127.0.0.1:3000`. For raw diagnostics, open `http://127.0.0.1:18888/traces`, `/metrics`, or `/structuredlogs`. In Aspire Metrics, choose `copilot-chat` and the tool-call instrument; widen the default five-minute window if the sample is no longer visible. Send telemetry to the collector on port 4318, not directly to either site, so it passes through the privacy pipeline.
 
-The Docker stack was left running for inspection. To stop and remove its containers:
+To stop and remove its containers:
 
 ```powershell
 docker compose -f deploy/local/compose.yaml down
@@ -230,7 +230,7 @@ This leaves the generated telemetry file and downloaded tools intact. Compose us
 
 ## Reproduce the native Windows fallback
 
-The [Docker quick start](../README.md#try-it-on-your-machine) is now verified on this machine and remains the documented cross-platform route. The following historical fallback was used before Docker installation. Stop the Compose stack before using it. Run commands from the repository root in PowerShell 7.2+ on Windows x64. It requires outbound access to the public GitHub release artifacts and the Windows `tar` command, but does not require Docker or Azure sign-in.
+The [Docker quick start](../README.md#try-it-on-your-machine) is the documented cross-platform route. The following historical fallback was used before Docker was available. Stop the Compose stack before using it. Run commands from the repository root in PowerShell 7.2+ on Windows x64. It requires outbound access to the public GitHub release artifacts and the Windows `tar` command, but does not require Docker or Azure sign-in.
 
 ### 1. Acquire the pinned tools
 
@@ -256,7 +256,7 @@ Expand-Archive -LiteralPath $aspireArchive -DestinationPath $aspireTools -Force
 
 ### 2. Start the dashboard in one terminal
 
-Keep this terminal running. Using a workspace-local `ASPIRE_HOME` avoided a bundle-directory promotion failure encountered with the default user-profile location on this machine.
+Keep this terminal running. Using a workspace-local `ASPIRE_HOME` avoided a bundle-directory promotion failure encountered with the default user-profile location during validation.
 
 ```powershell
 $env:ASPIRE_HOME = Join-Path $PWD 'deploy/local/.data/aspire-home'

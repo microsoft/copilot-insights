@@ -5,7 +5,7 @@ Copilot Insights is an early-stage project with a reference collector, local qui
 ## Propose a change
 
 1. Read the [architecture](docs/architecture.md), [data contract](docs/data-contract.md), and [rollout plan](docs/rollout-plan.md).
-2. For a substantial feature or new collection field, open a discussion or issue describing the use case, data implications, and validation strategy before implementation.
+2. For a substantial feature or new collection field, open an issue describing the use case, data implications, and validation strategy before implementation.
 3. Keep pull requests focused and explain what changed, why, and how it was checked.
 4. Follow the repository's organization contribution requirements and maintainer review process.
 

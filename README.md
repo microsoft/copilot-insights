@@ -118,7 +118,7 @@ Always restore your editor settings after the exercise, including when collectio
 
 **Expected:** the original settings are verified byte for byte and the temporary snapshot is deleted. Close or reload only the disposable test window to unload its temporary exporter. Restoration returns to the previous configuration, which may itself have telemetry enabled. If settings were edited concurrently, the script refuses to overwrite them; use the [local recovery guidance](docs/client-setup.md#local-development-and-administrator-diagnostics).
 
-If you trusted the sample folder, use **Workspaces: Manage Workspace Trust > Don't Trust** in that sample window before closing it. The [validated organization walkthrough](docs/local-validation.md#organization-walkthrough) records the empty baseline, actual native task, correlation, portal change, and exact settings restoration.
+If you trusted the sample folder, use **Workspaces: Manage Workspace Trust > Don't Trust** in that sample window before closing it. The [validated organization walkthrough](docs/local-validation.md#earlier-native-organization-walkthrough) records the empty baseline, actual native task, correlation, portal change, and exact settings restoration.
 
 **No new activity?** Check the selected organization, the test window's Local harness and effective settings, `Status`, and collector health (`http://127.0.0.1:13133/`). Check that the window loaded the new settings. Ordinary typing/terminal activity is not a Copilot invocation. Inspect [correlation and collection limits](docs/analytics.md#correlation-ids) before assuming events are missing.
 
@@ -144,9 +144,9 @@ The same service exposes a read-only **Streamable HTTP MCP server** at `http://1
 
 This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identities, and Azure Monitor storage. An administrator then imports the collector and insights images from a [release](https://github.com/microsoft/copilot-insights/releases) (or builds them from source) and redeploys with `deployCollector = true`. After registering the portal's Entra applications, a final redeploy with `deployInsights = true` adds the private, Entra-protected portal and admin MCP, which query the usage workspace with a managed identity. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
 
-**Validation status:** the isolated Azure validation resources and their active ingestion registration were **removed and verified absent on October 3, 2026**, at the user's request. The collector was healthy before cleanup, but authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights were **not verified**. Read the [historical evidence, cleanup, and remaining gates](docs/azure-validation.md) before treating the template as an end-to-end deployment.
+**Validation status:** the isolated Azure validation resources and their active ingestion registration were **removed and verified absent on October 3, 2026**. The collector was healthy before cleanup, but authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights were **not verified**. Read the [historical evidence, cleanup, and remaining gates](docs/azure-validation.md) before treating the template as an end-to-end deployment.
 
-The button reads the published ARM JSON on `main`, not your checkout. **Publication gate:** the new template URL returned HTTP 404 during the October 3, 2026 UTC check. Until this change is published, use the checked-out template via Azure CLI, upload it in the portal, or publish an [Azure-hosted Template Spec deployment link](docs/infrastructure.md#azure-hosted-deployment-link); do not treat the GitHub badge as a validated live deployment. An RBAC-protected Template Spec copy passed Azure provider validation in the isolated lab. See [scoped cloud results](docs/azure-validation.md).
+The button reads the published ARM JSON on `main`, not your checkout, and that URL is reachable only while the repository is public. To deploy a private or modified checkout, use the checked-out template via Azure CLI, upload it in the portal, or publish an [Azure-hosted Template Spec deployment link](docs/infrastructure.md#azure-hosted-deployment-link). The badge itself has not been verified as a live end-to-end deployment; an RBAC-protected Template Spec copy passed Azure provider validation in the isolated lab. See [scoped cloud results](docs/azure-validation.md).
 
 For an isolated Windows lab, use the [self-signed HTTPS certificate and trust/rollback workflow](docs/infrastructure.md#development-https-certificate). Keep private keys and deployment parameters outside the repository. The built-in Container Apps hostname already supports HTTPS; a development certificate is only for an explicitly configured custom hostname, not a production trust policy.
 
@@ -202,8 +202,6 @@ The [rollout plan](docs/rollout-plan.md#current-status) tracks each milestone.
 | [Security](SECURITY.md) | Report a vulnerability privately |
 | [Support](SUPPORT.md) | Ask questions and report issues |
 | [Code of conduct](CODE_OF_CONDUCT.md) | Community participation expectations |
-
-The repository is prepared for review before an open-source release. Repository visibility, organization approval, and release readiness are separate from the choice of license.
 
 ## Public references
 
