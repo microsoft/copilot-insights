@@ -1,5 +1,5 @@
 # Pinned by tag and digest. Update both together, then rerun scripts/verify.ps1 against the local quick start.
-FROM otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+FROM otel/opentelemetry-collector-contrib:0.161.0-386@sha256:76fd04f2d75922e93e447381bafcd0b78d24f1c5cdcc13f424d9a16f0342c087
 
 LABEL org.opencontainers.image.source="https://github.com/microsoft/copilot-insights" \
       org.opencontainers.image.description="OpenTelemetry Collector with the Copilot Insights privacy pipeline" \
