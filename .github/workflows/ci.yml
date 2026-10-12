@@ -29,7 +29,7 @@ jobs:
         run: |
           docker run --rm --network none \
             --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" \
-            copilot-insights-review:local node --test
+            copilot-insights:local node --test
           docker compose -f deploy/local/compose.yaml exec -T insights node --check dist/web/app.js
 
       - name: Verify collector-to-analytics delivery
@@ -66,13 +66,13 @@ jobs:
               -e 'APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=00000000-0000-0000-0000-000000000003;IngestionEndpoint=https://example.invalid/' \
               -e CI_UPSTREAM_ENDPOINT=https://collector.example.invalid \
               -e CI_UPSTREAM_SCOPE=api://00000000-0000-0000-0000-000000000001/Telemetry.Write \
-              copilot-insights-collector:local validate \
+              copilot-insights:local otelcol-contrib validate \
               --config=/etc/copilot-insights/base.yaml "--config=/etc/copilot-insights/${profile}.yaml"
           done
 
       - name: Collector logs
         if: failure()
-        run: docker compose -f deploy/local/compose.yaml logs collector insights
+        run: docker compose -f deploy/local/compose.yaml logs insights
 
       - name: Stop the local quick start
         if: always()

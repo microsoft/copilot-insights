@@ -4,10 +4,9 @@ using './main.bicep'
 param namePrefix = 'ciexample'
 param organizationId = 'example-org'
 param ingestionAudience = '00000000-0000-0000-0000-000000000000'
+param containerImage = 'copilot-insights:0.1.0'
 param deployCollector = false
-param collectorImage = 'copilot-insights-collector:0.1.0'
 param deployInsights = false
-param insightsImage = 'copilot-insights-review:0.1.0'
 param organizationName = 'Example organization'
 param insightsApiClientId = ''
 param insightsPortalClientId = ''

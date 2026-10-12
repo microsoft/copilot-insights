@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  images:
-    name: Publish container images
+  image:
+    name: Publish the container image
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -17,43 +17,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Test the portal image before publishing
+      - name: Test the image before publishing
         run: |
-          docker build --tag copilot-insights-review:test apps/insights
+          docker build --tag copilot-insights:test .
           docker run --rm --network none \
             --mount "type=bind,source=$PWD/apps/insights/tests,target=/app/tests,readonly" \
-            copilot-insights-review:test node --test
+            copilot-insights:test node --test
 
       - name: Build and push to GitHub Container Registry
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/copilot-insights"
           echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker buildx create --use
-          for image in collector:collector review:apps/insights; do
-            docker buildx build "${image#*:}" --push --platform linux/amd64 --provenance=mode=max --sbom=true \
-              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-              --label "org.opencontainers.image.version=$version" \
-              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-              --tag "$registry/copilot-insights-${image%%:*}:$version"
-          done
+          docker buildx build . --push --platform linux/amd64 --provenance=mode=max --sbom=true \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$version" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$image:$version"
 
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/copilot-insights"
           cat > notes.md <<EOF
           Early preview for evaluation; not a production-qualified release.
 
-          Container images (linux/amd64, with provenance and SBOM attestations):
+          Container image (linux/amd64, with provenance and SBOM attestations): \`$image:$version\`
 
-          - \`$registry/copilot-insights-collector:$version\`
-          - \`$registry/copilot-insights-review:$version\`
-
-          To use them with the Azure template, import both into the deployment's registry; see [Deploy from your checkout](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/infrastructure.md#deploy-from-your-checkout).
+          It runs the collector, the insights portal, and the admin MCP server; \`COPILOT_INSIGHTS_ROLE\` (\`all\`, \`collector\`, or \`portal\`) selects what a container runs. To use it with the Azure template, import it into the deployment's registry; see [Deploy from your checkout](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/infrastructure.md#deploy-from-your-checkout).
           EOF
           gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --generate-notes --notes-file notes.md

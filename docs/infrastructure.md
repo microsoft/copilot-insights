@@ -20,7 +20,7 @@ The topology and DNS sections below explain the deployment choices; they are not
 - **Private by default.** Usage telemetry is still metadata about people's work, so nothing in the path has a public endpoint: not the collector, the registry, or the storage ingestion.
 - **Authenticated, not just reachable.** Network reachability does not identify a sender. The collector accepts only Entra ID tokens issued for your ingestion app, to users you assign.
 - **No shared secrets for telemetry.** The collector uses a managed identity to pull its image and to write to Application Insights, which has local authentication disabled, and participants use their own sign-in. The portal uses its own managed identity to read the usage workspace. The only keys in the template are the operations workspace key that Container Apps needs for platform logs and the storage account key Container Apps needs to mount the portal's private state share.
-- **Standard parts.** Container Apps, Container Registry, Application Insights, and Log Analytics are standard Azure services, and the collector is the upstream OpenTelemetry Collector image.
+- **Standard parts.** Container Apps, Container Registry, Application Insights, and Log Analytics are standard Azure services, and the collector is the upstream OpenTelemetry Collector, packaged with the portal in one image.
 
 ## Topology
 
@@ -57,11 +57,11 @@ flowchart LR
 | Resource | Purpose | Private connectivity |
 |---|---|---|
 | Virtual network | Container Apps subnet (delegated) and private endpoint subnet | Peer client networks to it |
-| Container Apps environment | Hosts the collector; workload profiles, Consumption profile | Internal: reachable only from connected networks through a static private IP |
-| Container app | Collector image with the `azure` profile; ingress on port 4318, health on 13133 | VNet-scoped ingress, optional client CIDR allow-list |
-| Container app (insights, when `deployInsights = true`) | Portal, project registration, and admin MCP in Entra production mode; queries the usage workspace; one replica | VNet-scoped HTTPS ingress, same client CIDR allow-list |
+| Container Apps environment | Hosts the collector and portal apps; workload profiles, Consumption profile | Internal: reachable only from connected networks through a static private IP |
+| Container app (collector) | The Copilot Insights image in the `collector` role with the `azure` profile; ingress on port 4318, health on 13133 | VNet-scoped ingress, optional client CIDR allow-list |
+| Container app (insights, when `deployInsights = true`) | The same image in the `portal` role: portal, project registration, and admin MCP in Entra production mode; queries the usage workspace; one replica | VNet-scoped HTTPS ingress, same client CIDR allow-list |
 | Storage account and file share (with the portal) | Review decisions and the window-to-project registry | Private endpoint; public network access disabled |
-| Container Registry (Premium) | Stores the collector and insights images | Private endpoint; public access disabled unless push ranges are allowed |
+| Container Registry (Premium) | Stores the Copilot Insights image | Private endpoint; public access disabled unless push ranges are allowed |
 | User-assigned managed identities | Collector: pulls its image and authenticates exports. Portal: pulls its image and queries the usage workspace | No secrets in configuration |
 | Application Insights | Usage ingestion; local authentication disabled | Public ingestion disabled; reached through the private endpoint |
 | Log Analytics (usage) | Durable query store for collected telemetry | Public ingestion disabled; query access configurable |
@@ -76,7 +76,7 @@ Role assignments grant the collector identity `AcrPull` on the registry and `Mon
 | Path | Private | Notes |
 |---|---|---|
 | Client to collector | Yes | Internal environment static IP, resolved through private DNS |
-| Collector image pull | Yes | Registry private endpoint |
+| Image pull | Yes | Registry private endpoint |
 | Collector to Application Insights | Yes | Azure Monitor private endpoint; the resources reject public ingestion |
 | Clients and administrators to the portal | Yes | Same internal environment static IP and private DNS as the collector |
 | Portal to the usage workspace | Yes | Azure Monitor private endpoint, read-only `Log Analytics Reader` role |
@@ -198,29 +198,24 @@ Share that link with authorized deployment administrators, not as an employee en
 
 3. Peer the client network with the collector network (`vnetId` output). Peering is outside this template because it usually crosses subscriptions or ownership boundaries.
 
-4. Put the collector and insights images into the private registry. To use a [published release](https://github.com/microsoft/copilot-insights/releases), import its images; the registry's trusted-service bypass lets Azure pull them without opening public access:
+4. Put the Copilot Insights image into the private registry. To use a [published release](https://github.com/microsoft/copilot-insights/releases), import it; the registry's trusted-service bypass lets Azure pull it without opening public access:
 
    ```powershell
    $outputs = az deployment group show --resource-group '<resource-group>' --name copilot-insights --query properties.outputs -o json | ConvertFrom-Json
    $version = '<release-version>'   # for example 0.1.0, without the leading v
-   foreach ($name in 'copilot-insights-collector', 'copilot-insights-review') {
-       az acr import --name $outputs.registryName.value --source "ghcr.io/microsoft/${name}:$version" --image "${name}:$version"
-   }
+   az acr import --name $outputs.registryName.value --source "ghcr.io/microsoft/copilot-insights:$version" --image "copilot-insights:$version"
    ```
 
    To deploy your own changes instead, build and push from a machine that can reach the registry: a host in a connected network, or one whose public range you temporarily added to `registryAllowedIpRanges` and redeployed.
 
    ```powershell
-   $image = "$($outputs.registryLoginServer.value)/copilot-insights-collector:0.1.0"
-   $insightsImage = "$($outputs.registryLoginServer.value)/copilot-insights-review:0.1.0"
-   docker build --tag $image collector
-   docker build --tag $insightsImage apps/insights
+   $image = "$($outputs.registryLoginServer.value)/copilot-insights:0.1.0"
+   docker build --tag $image .
    az acr login --name $outputs.registryName.value
    docker push $image
-   docker push $insightsImage
    ```
 
-   Set `collectorImage` and `insightsImage` to the tags you imported or pushed.
+   Set `containerImage` to the tag you imported or pushed. The collector and portal apps both run it, in the `collector` and `portal` roles.
 
 5. Set `deployCollector = true`, clear any `registryAllowedIpRanges`, and run the deployment command again.
 
@@ -336,14 +331,14 @@ Keep identity enrollment aligned with managed assignments. Already-issued tokens
 - **Managed clients:** use Intune deployment/health reports and the versioned manifest for promotion, remediation, and rollback; see the [client lifecycle](intune-deployment.md#client-package-and-lifecycle).
 - **Logs:** collector output is in `ContainerAppConsoleLogs_CL` and platform events in `ContainerAppSystemLogs_CL` of the operations workspace.
 - **Delivery:** the export queue is in memory. A replica restart can lose queued batches; add a persistent queue before relying on the data for anything that needs completeness.
-- **Updates:** build and push a new tag, update `collectorImage` or `insightsImage`, and redeploy. Run the local verification against the new image first.
+- **Updates:** build and push a new tag, update `containerImage`, and redeploy. Run the local verification against the new image first.
 - **Cost drivers:** the Premium registry and private endpoints have standing charges; Container Apps and Log Analytics charges scale with usage and retention.
 - **Removal:** delete the resource group, then the app registration and any peering on the client side.
 
 ## Hardening backlog
 
-- Build a minimal collector distribution with only the required components instead of the contrib image.
+- Build a minimal collector distribution with only the required components instead of the contrib binary.
 - Route egress through a firewall, and disable public query access where operators work from connected networks.
 - Use `PrivateOnly` Azure Monitor access mode on dedicated networks.
 - Enable zone redundancy, and add a persistent sending queue.
-- Sign the published images. Tagged releases publish both images to GitHub Container Registry with provenance and SBOM attestations, but without signatures.
+- Sign the published image. Tagged releases publish it to GitHub Container Registry with provenance and SBOM attestations, but without signatures.

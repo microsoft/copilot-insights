@@ -1,0 +1,14 @@
+*
+!apps/insights/package.json
+!apps/insights/package-lock.json
+!apps/insights/server.ts
+!apps/insights/start.ts
+!apps/insights/healthcheck.ts
+!apps/insights/lib/
+!apps/insights/lib/**
+!apps/insights/public/
+!apps/insights/public/**
+!apps/insights/web/
+!apps/insights/web/**
+!collector/config/
+!collector/config/**

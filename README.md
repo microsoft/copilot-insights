@@ -46,7 +46,7 @@ docker compose -f deploy/local/compose.yaml ps
 
 On Linux, first create the local output directory in Bash with `mkdir -p deploy/local/.data && chmod 777 deploy/local/.data`. That shared-writable directory is only suitable for this disposable evaluation, not a production data store.
 
-**Expected:** three running services: collector, Aspire dashboard, and insights portal. Allow about 30 seconds for the portal health check.
+**Expected:** two running services: `insights` (the collector, portal, and admin MCP server in one container) and the Aspire `dashboard`. Allow about 30 seconds for the health check.
 
 Open **<http://127.0.0.1:3000/>**. **Demo organization** is selected by default, with sample activity, model/tool breakdowns, and findings ready for human review. Open a finding, expand **IDs & trace**, and try a review decision. The banner clearly labels the organization as fictional; these examples are generated locally, not emitted by Copilot or sent through the collector.
 
@@ -142,7 +142,7 @@ The same service exposes a read-only **Streamable HTTP MCP server** at `http://1
 
 [![Deploy infrastructure to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoft%2Fcopilot-insights%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json)
 
-This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identities, and Azure Monitor storage. An administrator then imports the collector and insights images from a [release](https://github.com/microsoft/copilot-insights/releases) (or builds them from source) and redeploys with `deployCollector = true`. After registering the portal's Entra applications, a final redeploy with `deployInsights = true` adds the private, Entra-protected portal and admin MCP, which query the usage workspace with a managed identity. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
+This is the **one-click infrastructure entry point**, not a complete application installation. Register an approved ingestion API first. The default deploys the private network, registry, managed identities, and Azure Monitor storage. An administrator then imports the Copilot Insights image from a [release](https://github.com/microsoft/copilot-insights/releases) (or builds it from source) and redeploys with `deployCollector = true`. After registering the portal's Entra applications, a final redeploy with `deployInsights = true` adds the private, Entra-protected portal and admin MCP, which query the usage workspace with a managed identity. Follow the [Azure deployment and validation guide](docs/infrastructure.md#deploy).
 
 **Validation status:** the isolated Azure validation resources and their active ingestion registration were **removed and verified absent on October 3, 2026**. The collector was healthy before cleanup, but authenticated OTLP delivery, cloud TLS handshakes, stored telemetry, and Azure-backed insights were **not verified**. Read the [historical evidence, cleanup, and remaining gates](docs/azure-validation.md) before treating the template as an end-to-end deployment.
 
@@ -168,7 +168,7 @@ flowchart LR
     Editor -->|"Model requests, unchanged"| Model["Existing model provider"]
 ```
 
-The local demo sends telemetry directly to a local collector, which writes a file that the portal reads instead of Azure storage. All profiles reuse the filtering rules in [collector/config/base.yaml](collector/config/base.yaml). See [Architecture](docs/architecture.md) for authentication and storage details.
+The local demo sends telemetry directly to a local collector, which writes a file that the portal reads instead of Azure storage. One container image, `ghcr.io/microsoft/copilot-insights`, provides the collector, the portal, and the admin MCP server: `COPILOT_INSIGHTS_ROLE` runs all of them (the default, used by the local demo) or only the `collector` or `portal`, which is how the Azure template keeps their identities separate. All profiles reuse the filtering rules in [collector/config/base.yaml](collector/config/base.yaml). See [Architecture](docs/architecture.md) for authentication and storage details.
 
 ## Project status
 

@@ -22,14 +22,11 @@ param ingestionTenantId string = tenant().tenantId
 @description('Set to false for the first deployment, push the image, then redeploy with true.')
 param deployCollector bool = false
 
-@description('Collector image as repository:tag in the registry this template creates.')
-param collectorImage string = 'copilot-insights-collector:0.1.0'
+@description('Copilot Insights image as repository:tag in the registry this template creates. The collector and portal apps run it in different roles.')
+param containerImage string = 'copilot-insights:0.1.0'
 
-@description('Set to true after pushing the insights image and registering its Entra applications (docs/production-access.md).')
+@description('Set to true after registering the portal Entra applications (docs/production-access.md).')
 param deployInsights bool = false
-
-@description('Insights portal image as repository:tag in the registry this template creates.')
-param insightsImage string = 'copilot-insights-review:0.1.0'
 
 @description('Organization name shown in the insights portal.')
 @maxLength(64)
@@ -504,9 +501,11 @@ resource collector 'Microsoft.App/containerApps@2024-03-01' = if (deployCollecto
       containers: [
         {
           name: 'collector'
-          image: '${registry.properties.loginServer}/${collectorImage}'
+          image: '${registry.properties.loginServer}/${containerImage}'
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
+            { name: 'COPILOT_INSIGHTS_ROLE', value: 'collector' }
+            { name: 'COPILOT_INSIGHTS_COLLECTOR_PROFILE', value: 'azure' }
             { name: 'CI_ORGANIZATION_ID', value: organizationId }
             { name: 'CI_OIDC_ISSUER_URL', value: '${environment().authentication.loginEndpoint}${ingestionTenantId}/v2.0' }
             { name: 'CI_OIDC_AUDIENCE', value: ingestionAudience }
@@ -575,9 +574,10 @@ resource insights 'Microsoft.App/containerApps@2024-03-01' = if (deployInsights)
       containers: [
         {
           name: 'insights'
-          image: '${registry.properties.loginServer}/${insightsImage}'
+          image: '${registry.properties.loginServer}/${containerImage}'
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
+            { name: 'COPILOT_INSIGHTS_ROLE', value: 'portal' }
             { name: 'INSIGHTS_MODE', value: 'production' }
             { name: 'INSIGHTS_PUBLIC_ORIGIN', value: insightsOrigin }
             { name: 'INSIGHTS_ENTRA_TENANT_ID', value: insightsTenantId }
