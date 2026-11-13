@@ -6,9 +6,9 @@
   "license": "MIT",
   "engines": { "node": ">=24" },
   "dependencies": {
-    "@azure/msal-browser": "5.27.0",
+    "@azure/msal-browser": "5.28.0",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "jose": "6.2.14",
+    "jose": "6.2.15",
     "zod": "4.6.7"
   },
   "scripts": {
