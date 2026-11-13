@@ -2,7 +2,7 @@
 # Base images are pinned by tag and digest. Update both together, then rerun scripts/verify.ps1 against the local quick start.
 FROM otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b AS collector
 
-FROM node:24.22.1-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS web
+FROM node:24.22.2-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS web
 
 WORKDIR /app
 ARG NPM_REGISTRY=https://registry.npmjs.org/
@@ -12,7 +12,7 @@ COPY apps/insights/lib/types.ts ./lib/
 COPY apps/insights/web/ ./web/
 RUN npm run build
 
-FROM node:24.22.1-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+FROM node:24.22.2-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8
 
 LABEL org.opencontainers.image.source="https://github.com/microsoft/copilot-insights" \
       org.opencontainers.image.description="Copilot Insights: OpenTelemetry Collector privacy pipeline, insights portal, and admin MCP server" \
