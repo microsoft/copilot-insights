@@ -1,6 +1,6 @@
 # One image for the collector, the insights portal, and the admin MCP server; COPILOT_INSIGHTS_ROLE selects what runs.
 # Base images are pinned by tag and digest. Update both together, then rerun scripts/verify.ps1 against the local quick start.
-FROM otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b AS collector
+FROM otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea AS collector
 
 FROM node:24.22.2-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS web
 
